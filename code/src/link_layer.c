@@ -10,16 +10,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-// MISC
-#define _POSIX_SOURCE 1 // POSIX compliant source
-
-#define FLAG 0x7E
-#define A_ANSWERS_FROM_RECEIVER 0x03
-#define A_FRAMES_FROM_SENDER 0x03
-#define C_SET 0x03
-#define C_UA 0x07
-// #define C_DISC 0x0B
-
 int fd;
 struct termios oldtio;
 struct termios newtio;
@@ -35,17 +25,111 @@ void alarmHandler(int signal) {
     printf("Alarm #%d\n", alarmCount);
 }
 
-void send_ua_frame(int fd) {
-    char ack[5];
-    ack[0] = FLAG;
-    ack[1] = A_ANSWERS_FROM_RECEIVER;
-    ack[2] = C_UA;
-    ack[3] = ack[1] ^ ack[2];
-    ack[4] = FLAG;
-    write(fd, ack, 5);  // no need to check if it was sent correctly
+typedef enum {
+    START,
+    FLAG_RCV,
+    A_RCV,
+    C_RCV_SET,
+    C_RCV_UA,
+    BCC_OK,
+    STOP
+} State;
+
+void process_set_frame(State *state, char byte) {
+    switch (*state) {
+        case C_RCV_SET:
+            if (byte == (A ^ C_SET)) {
+                *state = BCC_OK;
+            }
+            
+            else {
+                *state = START;
+            }
+            break;
+
+        case BCC_OK:
+            if (byte == FLAG) {
+                // send_ua_frame(fd);   // ?
+                *state = STOP;
+            }
+            else {
+                *state = START;
+            }
+            break;
+    }
 }
 
-int write_to_serial_port(int fd, const char *frame, int frame_size) {
+
+void process_ua_frame(State *st, char byte) {
+    // after receiving C = UA
+    switch (*st) {        
+        case C_RCV_UA:
+            if (byte == (A ^ C_UA)) {
+                *st = BCC_OK;
+            }
+            else {
+                *st = START;        // error -> might need to do something else
+            }
+            break;
+        case BCC_OK:
+            if (byte == FLAG) {
+                *st = STOP; // received UA frame correctly
+            }
+            else {
+                *st = START;
+            }
+            break;   
+    }
+}
+
+
+
+// Here frame does not include the actual flags at the beginning and end of the frame
+// stuffed must have size >= 2 * frame_size
+int add_byte_stuffing(char *frame, int frame_size, char *stuffed) {
+    int stuffed_size = 0;
+    for (int i = 0; i < frame_size; i++) {
+        if (frame[i] == FLAG || frame[i] == ESCAPE) {
+            stuffed[stuffed_size] = ESCAPE;
+            stuffed[stuffed_size + 1] = frame[i] ^ ESCAPE_XOR;
+            stuffed_size += 2;
+        }
+        else {
+            stuffed[stuffed_size] = frame[i];
+            stuffed_size++;
+        }
+    }
+    return stuffed_size;
+}
+
+int remove_byte_stuffing(char *frame, int frame_size, char *unstuffed) {
+    int unstuffed_size = 0;
+    for (int i = 0; i < frame_size; i++) {
+        if (frame[i] == ESCAPE) {   // there is always something after an escape (what if there are errors)
+            unstuffed[unstuffed_size] = frame[i + 1] ^ ESCAPE_XOR;
+            unstuffed_size++;
+            i++;
+        }
+        else {
+            unstuffed[unstuffed_size] = frame[i];
+            unstuffed_size++;
+        }
+    }
+    return unstuffed_size;
+}
+
+void send_control_frame(int fd, char control, int needs_timeout) {
+    char buf[5];
+    buf[0] = FLAG;
+    buf[1] = A;
+    buf[2] = control;
+    buf[3] = buf[1] ^ buf[2];
+    buf[4] = FLAG;
+    if (needs_timeout) write_with_timeout(fd, buf, 5);
+    else write(fd, buf, 5);
+}
+
+int write_with_timeout(int fd, const char *frame, int frame_size) {
     char response[5];
 
     int STOP = FALSE;
@@ -61,7 +145,7 @@ int write_to_serial_port(int fd, const char *frame, int frame_size) {
         int bytes = read(fd, response, 5);
         printf("%d bytes read\n", bytes);
         if (TRUE) { // process bytes with a state machine (for now we assume they are correct)
-            // e.g. set -> ua; i -> rr
+            // set -> ua; i -> rr, disc -> disc
 
             STOP = TRUE;
             alarm(0);
@@ -69,7 +153,6 @@ int write_to_serial_port(int fd, const char *frame, int frame_size) {
         printf("%d bytes read\n", bytes);
     }
 }
-
 
 
 ////////////////////////////////////////////////
@@ -116,16 +199,16 @@ int llopen(LinkLayer connectionParameters)
     if (connectionParameters.role == LlTx) {
         char buf[5];
         buf[0] = FLAG;
-        buf[1] = A_FRAMES_FROM_SENDER;
+        buf[1] = A;
         buf[2] = C_SET;
         buf[3] = buf[1] ^ buf[2];
         buf[4] = FLAG;
-        write_to_serial_port(buf, 5, fd);
+        write_with_timeout(buf, 5, fd);
     }
     else {
         char buf[5];
         read_from_serial_port(fd, buf, 5);
-        // or llread(NULL), we expect no data;
+        // send UA
     }
     return 1;
 }
@@ -140,7 +223,7 @@ int llwrite(const unsigned char *buf, int bufSize)
     unsigned char frame[frame_size];
 
     frame[0] = FLAG;
-    frame[1] = A_FRAMES_FROM_SENDER;
+    frame[1] = A;
     frame[2] = C_SET;
     frame[3] = frame[1] ^ frame[2];
     int data_bcc_index = frame_size - 2;
@@ -150,7 +233,7 @@ int llwrite(const unsigned char *buf, int bufSize)
     }
     frame[frame_size - 1] = FLAG;
 
-    write_to_serial_port(fd, frame, frame_size);    // make sure it gets sent correctly
+    write_with_timeout(fd, frame, frame_size);    // make sure it gets sent correctly
 
     return 0;
 }
@@ -170,7 +253,8 @@ int llread(unsigned char *packet)
     printf("%d bytes read\n", bytes_read);
     // process bytes_read with a state machine, then send response accordingly
     // for now, we just send an acknowledgment for the set frame (UA)
-    send_ua_frame(fd);
+    // send_ua_frame(fd);
+    send_control_frame(fd, C_UA, FALSE);
     return 0;
 }
 
@@ -179,7 +263,19 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose(int showStatistics)
 {
-    // TODO
+    // print statistics?
+    if (showStatistics) {
+        printf("Suka blyad\n");
+    }
+
+    // Restore the old port settings
+    if (tcsetattr(fd, TCSANOW, &oldtio) == -1)
+    {
+        perror("tcsetattr");
+        exit(-1);
+    }
+
+    close(fd);
 
     return 1;
 }

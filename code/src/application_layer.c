@@ -20,6 +20,7 @@ void send_file(const char *filename)
 
     while ((bytes_read = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0)
     {
+        // build packet before writing it to serial port [TODO]
         llwrite(buf, bytes_read);
         packet_number++;
     }
@@ -43,6 +44,7 @@ void receive_file(const char *filename)
 
     while ((bytes_read = llread(buf)) > 0)
     {
+        // process frame before writing to file
         write(fd, buf, bytes_read);
         packet_number++;
     }
