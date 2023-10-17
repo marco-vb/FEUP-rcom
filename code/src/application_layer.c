@@ -2,9 +2,14 @@
 
 #include "application_layer.h"
 #include "link_layer.h"
-#include <fcntl.h>
 
-void send_file(const char *filename)
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <string.h>
+#include <unistd.h>
+
+void sendFile(const char *filename)
 {
     int fd = open(filename, O_RDONLY);
 
@@ -15,20 +20,20 @@ void send_file(const char *filename)
     }
 
     unsigned char buf[MAX_PAYLOAD_SIZE];
-    int bytes_read = 0;
-    int packet_number = 1;
+    int bytesRead = 0;
+    int packetNumber = 1;
 
-    while ((bytes_read = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0)
+    while ((bytesRead = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0)
     {
         // build packet before writing it to serial port [TODO]
-        llwrite(buf, bytes_read);
-        packet_number++;
+        llwrite(buf, bytesRead);
+        packetNumber++;
     }
 
     close(fd);
 }
 
-void receive_file(const char *filename)
+void receiveFile(const char *filename)
 {
     int fd = open(filename, O_WRONLY);
 
@@ -39,14 +44,14 @@ void receive_file(const char *filename)
     }
 
     unsigned char buf[MAX_PAYLOAD_SIZE];
-    int bytes_read = 0;
-    int packet_number = 1;
+    int bytesRead = 0;
+    int packetNumber = 1;
 
-    while ((bytes_read = llread(buf)) > 0)
+    while ((bytesRead = llread(buf)) > 0)
     {
         // process frame before writing to file
-        write(fd, buf, bytes_read);
-        packet_number++;
+        write(fd, buf, bytesRead);
+        packetNumber++;
     }
 
     close(fd);
@@ -55,12 +60,12 @@ void receive_file(const char *filename)
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
 {
-    LinkLayerRole role = strcmp(role, "tx") == 0 ? LlTx : LlRx;
+    LinkLayerRole llRole = strcmp(role, "tx") == 0 ? LlTx : LlRx;
 
     LinkLayer link_layer;
     link_layer.baudRate = baudRate;
     link_layer.nRetransmissions = nTries;
-    link_layer.role = role;
+    link_layer.role = llRole;
     link_layer.timeout = timeout;
     strcpy(link_layer.serialPort, serialPort);
 
@@ -70,13 +75,13 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         exit(-1);
     }
 
-    if (role == LlTx)
+    if (llRole == LlTx)
     {
-        send_file(filename);
+        sendFile(filename);
     }
     else
     {
-        receive_file(filename);
+        receiveFile(filename);
     }
 
     if (llclose(1) == -1)

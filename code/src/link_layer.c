@@ -39,6 +39,7 @@ void alarmHandler(int signal) {
     alarmCount++;
     printf("Alarm #%d\n", alarmCount);
 }
+void sendControlFrame(int fd, char control, int needsTimeout, void (*processFrameReceived)(State *, char));
 
 void processFrameSET(State *state, char byte) {
     switch (*state) {
@@ -60,6 +61,8 @@ void processFrameSET(State *state, char byte) {
             else {
                 *state = START;
             }
+            break;
+        default:
             break;
     }
 }
@@ -105,6 +108,8 @@ void processFrameUA(State *st, char byte) {
             else {
                 *st = START;
             }
+            break;
+        default:
             break;
     }
 }
@@ -221,25 +226,25 @@ void processFrameInfoResponse(State *st, char byte) {
 }
 
 // stuffed must have size >= 2 * frame_size
-int add_byte_stuffing(char *frame, int frame_size, char *stuffed) {
-    int stuffed_size = 0;
-    stuffed[stuffed_size++] = FLAG;
-    for (int i = 1; i < frame_size - 1; i++) {  // avoid flag at beginning and end
+int addByteStuffing(char *frame, int frameSize, char *stuffed) {
+    int stuffedSize = 0;
+    stuffed[stuffedSize++] = FLAG;
+    for (int i = 1; i < frameSize - 1; i++) {  // avoid flag at beginning and end
         if (frame[i] == FLAG || frame[i] == ESCAPE) {
-            stuffed[stuffed_size] = ESCAPE;
-            stuffed[stuffed_size + 1] = frame[i] ^ ESCAPE_XOR;
-            stuffed_size += 2;
+            stuffed[stuffedSize] = ESCAPE;
+            stuffed[stuffedSize + 1] = frame[i] ^ ESCAPE_XOR;
+            stuffedSize += 2;
         }
         else {
-            stuffed[stuffed_size] = frame[i];
-            stuffed_size++;
+            stuffed[stuffedSize] = frame[i];
+            stuffedSize++;
         }
     }
-    stuffed[stuffed_size++] = FLAG;
-    return stuffed_size;
+    stuffed[stuffedSize++] = FLAG;
+    return stuffedSize;
 }
 
-int writeWithTimeout(int fd, const char *frame, int frame_size, void (*process_frame_rcv)(State *, char)) {
+int writeWithTimeout(int fd, const char *frame, int frameSize, void (*processFrameReceived)(State *, char)) {
     // char stuffed_frame[2 * frame_size];
     // int size = add_byte_stuffing(frame, frame_size, stuffed_frame);
 
@@ -250,7 +255,7 @@ int writeWithTimeout(int fd, const char *frame, int frame_size, void (*process_f
     alarmEnabled = FALSE;
     while (alarmCount < parameters.nRetransmissions && !STOP) {
         if (!alarmEnabled) {
-            int bytes = write(fd, frame, frame_size);
+            int bytes = write(fd, frame, frameSize);
             printf("%d bytes written\n", bytes);
             alarm(parameters.timeout); // Set alarm to be triggered in X seconds
             alarmEnabled = TRUE;
@@ -259,7 +264,7 @@ int writeWithTimeout(int fd, const char *frame, int frame_size, void (*process_f
         int bytes = read(fd, &response, 1);
         printf("%d bytes read\n", bytes);
 
-        process_frame_rcv(&st, response);
+        processFrameReceived(&st, response);
         if (st == STOP) {
             STOP = TRUE;
             alarm(0);
@@ -269,8 +274,8 @@ int writeWithTimeout(int fd, const char *frame, int frame_size, void (*process_f
     return 0;
 }
 
-
-void receiveControlFrame(int fd, char control, void (*process_rcv_frame)(State *, char)) {
+// TODO
+void receiveControlFrame(int fd, char control, void (*processFrameReceived)(State *, char)) {
     char response;
     
     int STOP = FALSE;
@@ -278,7 +283,7 @@ void receiveControlFrame(int fd, char control, void (*process_rcv_frame)(State *
     while (!STOP) {
         int bytes = read(fd, &response, 1);
         printf("%d bytes read\n", bytes);
-        process_rcv_frame(&st, response);
+        processFrameReceived(&st, response);
 
         if (st == STOP) {
             STOP = TRUE;
@@ -286,9 +291,9 @@ void receiveControlFrame(int fd, char control, void (*process_rcv_frame)(State *
     }
 }
 
-void sendControlFrame(int fd, char control, int needsTimeout, void (*process_rcv_frame)(State *, char)) {
-    char buf[5] = {FLAG, A, control, A ^ control, FLAG};
-    if (needsTimeout) writeWithTimeout(fd, buf, 5, process_rcv_frame);
+void sendControlFrame(int fd, char control, int needsTimeout, void (*processFrameReceived)(State *, char)) {
+    char buf[] = {FLAG, A, control, A ^ control, FLAG};
+    if (needsTimeout) writeWithTimeout(fd, buf, 5, processFrameReceived);
     else write(fd, buf, 5);
 }
 
@@ -337,9 +342,9 @@ int llopen(LinkLayer connectionParameters)
         sendControlFrame(fd, C_SET, TRUE, processFrameUA);
     }
     else {
-        char buf[5];
+        
         // needs a function to read from serial port -> process frame first, then send something (here we send UA)
-        // readFromSerialPort(fd, buf, 5);  // TODO: do this with a state machine
+        // readFromSerialPort();  // TODO: do this with a state machine
     }
     return 1;
 }
@@ -350,21 +355,21 @@ int llopen(LinkLayer connectionParameters)
 int llwrite(const unsigned char *buf, int bufSize)
 {
     // builds frame with data given by buf, and writes it to the serial port, using STOP & WAIT
-    int frame_size = bufSize + 6;
-    unsigned char frame[frame_size];
+    int frameSize = bufSize + 6;
+    char frame[frameSize];
 
     frame[0] = FLAG;
     frame[1] = A;
     frame[2] = currentSequenceNumber == 0 ? C_I0 : C_I1;
     frame[3] = frame[1] ^ frame[2];
-    int data_bcc_index = frame_size - 2;
+    int dataBccIndex = frameSize - 2;
     for (int i = 0; i < bufSize; i++) {
         frame[i + 4] = buf[i];
-        frame[data_bcc_index] ^= buf[i];
+        frame[dataBccIndex] ^= buf[i];
     }
-    frame[frame_size - 1] = FLAG;
+    frame[frameSize - 1] = FLAG;
 
-    writeWithTimeout(fd, frame, frame_size, processFrameInfoResponse);    // make sure it gets sent correctly
+    writeWithTimeout(fd, frame, frameSize, processFrameInfoResponse);    // make sure it gets sent correctly
     return 0;
 }
 
