@@ -16,6 +16,21 @@ struct termios newtio;
 
 LinkLayer parameters;
 
+// current sequence number for I frames (0 or 1)
+int currentSequenceNumber = 0;  // it's the next number that the writer will send
+
+typedef enum {
+    START,
+    FLAG_RCV,
+    A_RCV,
+    C_RCV,
+    C_RCV_SET,
+    C_RCV_UA,   
+    BCC_OK,
+    STOP
+} State;
+
+
 int alarmEnabled = FALSE;
 int alarmCount = 0;
 
@@ -25,17 +40,7 @@ void alarmHandler(int signal) {
     printf("Alarm #%d\n", alarmCount);
 }
 
-typedef enum {
-    START,
-    FLAG_RCV,
-    A_RCV,
-    C_RCV_SET,
-    C_RCV_UA,
-    BCC_OK,
-    STOP
-} State;
-
-void process_set_frame(State *state, char byte) {
+void processFrameSET(State *state, char byte) {
     switch (*state) {
         case C_RCV_SET:
             if (byte == (A ^ C_SET)) {
@@ -59,16 +64,38 @@ void process_set_frame(State *state, char byte) {
     }
 }
 
-
-void process_ua_frame(State *st, char byte) {
-    // after receiving C = UA
-    switch (*st) {        
+void processFrameUA(State *st, char byte) {
+    switch (*st) {
+        case START:
+            if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            break;
+        case FLAG_RCV:
+            if (byte == A) {
+                *st = A_RCV;
+            }
+            else if (byte != FLAG) {
+                *st = START;
+            }
+            break;
+        case A_RCV:
+            if (byte == C_UA) {
+                *st = C_RCV_UA;
+            }
+            else if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            else {
+                *st = START;
+            }
+            break;
         case C_RCV_UA:
             if (byte == (A ^ C_UA)) {
                 *st = BCC_OK;
             }
             else {
-                *st = START;        // error -> might need to do something else
+                *st = START;
             }
             break;
         case BCC_OK:
@@ -78,17 +105,126 @@ void process_ua_frame(State *st, char byte) {
             else {
                 *st = START;
             }
-            break;   
+            break;
     }
 }
 
 
+void processInfoFrame(State *st, char byte) {
+    static int receivedSequenceNumber;
+    switch (*st) {
+        case START:
+            if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            break;
+        case FLAG_RCV:
+            if (byte == A) {
+                *st = A_RCV;
+            }
+            else if (byte != FLAG) {
+                *st = START;
+            }
+            break;
+        case A_RCV:
+            if (byte == C_I0 || byte == C_I1) {
+                *st = C_RCV;
+                receivedSequenceNumber = byte == C_I0 ? 0 : 1;
+            }
+            else if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            else {
+                *st = START;
+            }
+            break;
+        case C_RCV:
+            if (byte == (A ^ byte)) {
+                *st = BCC_OK;
+            }
+            else if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            else {
+                *st = START;
+            }
+            break;
+        case BCC_OK:
+            if (byte == FLAG) {
+                *st = STOP;
+                if (currentSequenceNumber != receivedSequenceNumber) {  // REJ
+                    sendControlFrame(fd, receivedSequenceNumber == 0 ? C_REJ0 : C_REJ1, FALSE, NULL);
+                }
+                else sendControlFrame(fd, receivedSequenceNumber == 0 ? C_RR1 : C_RR0, FALSE, NULL);
+            }
+            else {
+                *st = START;
+            }
+            break;
+        default:
+            break;
+    }
+}
 
-// Here frame does not include the actual flags at the beginning and end of the frame
+void processFrameInfoResponse(State *st, char byte) {
+    static int c;
+    switch (*st) {
+        case START:
+            if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            break;
+        case FLAG_RCV:
+            if (byte == A) {
+                *st = A_RCV;
+            }
+            else if (byte != FLAG) {
+                *st = START;
+            }
+            break;
+        case A_RCV:
+            if (byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || byte == C_REJ1) {
+                *st = C_RCV;
+                c = byte;
+            }
+            else if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            else {
+                *st = START;
+            }
+            break;
+        case C_RCV:
+            if (byte == (A ^ c)) {
+                *st = BCC_OK;
+            }
+            else if (byte == FLAG) {
+                *st = FLAG_RCV;
+            }
+            else {
+                *st = START;
+            }
+            break;
+        case BCC_OK:
+            if (byte == FLAG) {
+                *st = STOP;
+                if (c == C_RR0 || c == C_REJ0) currentSequenceNumber = 0;
+                else currentSequenceNumber = 1; // C_RR1 or C_REJ1
+            }
+            else {
+                *st = START;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
 // stuffed must have size >= 2 * frame_size
 int add_byte_stuffing(char *frame, int frame_size, char *stuffed) {
     int stuffed_size = 0;
-    for (int i = 0; i < frame_size; i++) {
+    stuffed[stuffed_size++] = FLAG;
+    for (int i = 1; i < frame_size - 1; i++) {  // avoid flag at beginning and end
         if (frame[i] == FLAG || frame[i] == ESCAPE) {
             stuffed[stuffed_size] = ESCAPE;
             stuffed[stuffed_size + 1] = frame[i] ^ ESCAPE_XOR;
@@ -99,40 +235,17 @@ int add_byte_stuffing(char *frame, int frame_size, char *stuffed) {
             stuffed_size++;
         }
     }
+    stuffed[stuffed_size++] = FLAG;
     return stuffed_size;
 }
 
-int remove_byte_stuffing(char *frame, int frame_size, char *unstuffed) {
-    int unstuffed_size = 0;
-    for (int i = 0; i < frame_size; i++) {
-        if (frame[i] == ESCAPE) {   // there is always something after an escape (what if there are errors)
-            unstuffed[unstuffed_size] = frame[i + 1] ^ ESCAPE_XOR;
-            unstuffed_size++;
-            i++;
-        }
-        else {
-            unstuffed[unstuffed_size] = frame[i];
-            unstuffed_size++;
-        }
-    }
-    return unstuffed_size;
-}
-
-void send_control_frame(int fd, char control, int needs_timeout) {
-    char buf[5];
-    buf[0] = FLAG;
-    buf[1] = A;
-    buf[2] = control;
-    buf[3] = buf[1] ^ buf[2];
-    buf[4] = FLAG;
-    if (needs_timeout) write_with_timeout(fd, buf, 5);
-    else write(fd, buf, 5);
-}
-
-int write_with_timeout(int fd, const char *frame, int frame_size) {
-    char response[5];
+int writeWithTimeout(int fd, const char *frame, int frame_size, void (*process_frame_rcv)(State *, char)) {
+    // char stuffed_frame[2 * frame_size];
+    // int size = add_byte_stuffing(frame, frame_size, stuffed_frame);
 
     int STOP = FALSE;
+    State st = START;
+    
     alarmCount = 0;
     alarmEnabled = FALSE;
     while (alarmCount < parameters.nRetransmissions && !STOP) {
@@ -142,18 +255,42 @@ int write_with_timeout(int fd, const char *frame, int frame_size) {
             alarm(parameters.timeout); // Set alarm to be triggered in X seconds
             alarmEnabled = TRUE;
         }
-        int bytes = read(fd, response, 5);
+        char response;
+        int bytes = read(fd, &response, 1);
         printf("%d bytes read\n", bytes);
-        if (TRUE) { // process bytes with a state machine (for now we assume they are correct)
-            // set -> ua; i -> rr, disc -> disc
 
+        process_frame_rcv(&st, response);
+        if (st == STOP) {
             STOP = TRUE;
             alarm(0);
         }
         printf("%d bytes read\n", bytes);
     }
+    return 0;
 }
 
+
+void receiveControlFrame(int fd, char control, void (*process_rcv_frame)(State *, char)) {
+    char response;
+    
+    int STOP = FALSE;
+    State st = START;
+    while (!STOP) {
+        int bytes = read(fd, &response, 1);
+        printf("%d bytes read\n", bytes);
+        process_rcv_frame(&st, response);
+
+        if (st == STOP) {
+            STOP = TRUE;
+        }
+    }
+}
+
+void sendControlFrame(int fd, char control, int needsTimeout, void (*process_rcv_frame)(State *, char)) {
+    char buf[5] = {FLAG, A, control, A ^ control, FLAG};
+    if (needsTimeout) writeWithTimeout(fd, buf, 5, process_rcv_frame);
+    else write(fd, buf, 5);
+}
 
 ////////////////////////////////////////////////
 // LLOPEN
@@ -197,18 +334,12 @@ int llopen(LinkLayer connectionParameters)
     printf("New termios structure set\n");
 
     if (connectionParameters.role == LlTx) {
-        char buf[5];
-        buf[0] = FLAG;
-        buf[1] = A;
-        buf[2] = C_SET;
-        buf[3] = buf[1] ^ buf[2];
-        buf[4] = FLAG;
-        write_with_timeout(buf, 5, fd);
+        sendControlFrame(fd, C_SET, TRUE, processFrameUA);
     }
     else {
         char buf[5];
-        read_from_serial_port(fd, buf, 5);
-        // send UA
+        // needs a function to read from serial port -> process frame first, then send something (here we send UA)
+        // readFromSerialPort(fd, buf, 5);  // TODO: do this with a state machine
     }
     return 1;
 }
@@ -224,7 +355,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 
     frame[0] = FLAG;
     frame[1] = A;
-    frame[2] = C_SET;
+    frame[2] = currentSequenceNumber == 0 ? C_I0 : C_I1;
     frame[3] = frame[1] ^ frame[2];
     int data_bcc_index = frame_size - 2;
     for (int i = 0; i < bufSize; i++) {
@@ -233,8 +364,7 @@ int llwrite(const unsigned char *buf, int bufSize)
     }
     frame[frame_size - 1] = FLAG;
 
-    write_with_timeout(fd, frame, frame_size);    // make sure it gets sent correctly
-
+    writeWithTimeout(fd, frame, frame_size, processFrameInfoResponse);    // make sure it gets sent correctly
     return 0;
 }
 
@@ -243,18 +373,9 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
-    int max_frame_size = MAX_PAYLOAD_SIZE + 6;
-    char frame[max_frame_size];
-    int bytes_read = read(fd, frame, max_frame_size);
-    if (bytes_read == -1) {
-        perror("read");
-        exit(-1);
-    }
-    printf("%d bytes read\n", bytes_read);
-    // process bytes_read with a state machine, then send response accordingly
-    // for now, we just send an acknowledgment for the set frame (UA)
-    // send_ua_frame(fd);
-    send_control_frame(fd, C_UA, FALSE);
+    // needs a function to read from serial port
+    // process frame first, then send something
+    // readFromSerialPort(fd, &response, 1);  // TODO: do this with a state machine
     return 0;
 }
 
