@@ -5,51 +5,67 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
 
-void sendFile(const char *filename)
-{
+
+void sendControlPacket(uint8_t controlField, const char* field) {
+    uint8_t buf[MAX_PAYLOAD_SIZE];
+
+    buf[0] = controlField;
+    buf[1] = strlen(field);
+    strcpy((char*) &buf[2], field);
+
+    llwrite(buf, strlen(field) + 2);
+}
+
+void sendDataPacket(uint8_t* buf, ssize_t size) {
+    uint8_t packet[MAX_PAYLOAD_SIZE + 3];
+
+    packet[0] = DATA;
+    packet[1] = (size >> 8) & 0xFF;
+    packet[2] = size & 0xFF;
+    memcpy(&packet[3], buf, size);
+
+    llwrite(packet, size + 3);
+}
+
+void sendFile(const char* filename) {
     int fd = open(filename, O_RDONLY);
 
-    if (fd == -1)
-    {
+    if (fd == -1) {
         printf("Error opening file\n");
         exit(-1);
     }
 
-    unsigned char buf[MAX_PAYLOAD_SIZE];
-    int bytesRead = 0;
-    int packetNumber = 1;
+    sendControlPacket(START, filename);
 
-    while ((bytesRead = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0)
-    {
-        // build packet before writing it to serial port [TODO]
-        llwrite(buf, bytesRead);
+    uint8_t buf[MAX_PAYLOAD_SIZE];
+    ssize_t bytesRead = 0, packetNumber = 1;
+
+    while ((bytesRead = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0) {
+        sendDataPacket(buf, bytesRead);
         packetNumber++;
     }
 
+    sendControlPacket(END, filename);
     close(fd);
 }
 
-void receiveFile(const char *filename)
-{
+void receiveFile(const char* filename) {
     int fd = open(filename, O_WRONLY);
 
-    if (fd == -1)
-    {
+    if (fd == -1) {
         printf("Error opening file\n");
         exit(-1);
     }
 
-    unsigned char buf[MAX_PAYLOAD_SIZE];
-    int bytesRead = 0;
-    int packetNumber = 1;
+    uint8_t buf[MAX_PAYLOAD_SIZE];
+    ssize_t bytesRead = 0, packetNumber = 1;
 
-    while ((bytesRead = llread(buf)) > 0)
-    {
-        // process frame before writing to file
+    while ((bytesRead = llread(buf)) > 0) {
         write(fd, buf, bytesRead);
         packetNumber++;
     }
@@ -57,35 +73,27 @@ void receiveFile(const char *filename)
     close(fd);
 }
 
-void applicationLayer(const char *serialPort, const char *role, int baudRate,
-                      int nTries, int timeout, const char *filename)
-{
-    LinkLayerRole llRole = strcmp(role, "tx") == 0 ? LlTx : LlRx;
+void applicationLayer(const char* serialPort, const char* role, int baudRate,
+    int nTries, int timeout, const char* filename) {
 
-    LinkLayer link_layer;
-    link_layer.baudRate = baudRate;
-    link_layer.nRetransmissions = nTries;
-    link_layer.role = llRole;
-    link_layer.timeout = timeout;
+    LinkLayer link_layer = {
+        .role = strcmp(role, "tx") == 0 ? LlTx : LlRx,
+        .baudRate = baudRate,
+        .nRetransmissions = nTries,
+        .timeout = timeout,
+    };
+
     strcpy(link_layer.serialPort, serialPort);
 
-    if (llopen(link_layer) == -1)
-    {
+    if (llopen(link_layer) == -1) {
         printf("Error opening link layer\n");
         exit(-1);
     }
 
-    if (llRole == LlTx)
-    {
-        sendFile(filename);
-    }
-    else
-    {
-        receiveFile(filename);
-    }
+    if (link_layer.role == LlTx) sendFile(filename);
+    else receiveFile(filename);
 
-    if (llclose(1) == -1)
-    {
+    if (llclose(1) == -1) {
         printf("Error closing link layer\n");
         exit(-1);
     }
