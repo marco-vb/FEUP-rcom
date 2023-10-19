@@ -8,6 +8,9 @@
 #define START 2
 #define END 3
 
+#define FILESIZE 0
+#define FILENAME 1
+
 // Application layer main function.
 // Arguments:
 //   serialPort: Serial port name (e.g., /dev/ttyS0).

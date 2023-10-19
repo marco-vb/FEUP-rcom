@@ -43,6 +43,9 @@ typedef struct {
 #define ESCAPE 0x7D
 #define ESCAPE_XOR 0x20
 
+#define START_FLAG 2
+#define END_FLAG 3
+
 // Open a connection using the "port" parameters defined in struct linkLayer.
 // Return "1" on success or "-1" on error.
 int llopen(LinkLayer connectionParameters);

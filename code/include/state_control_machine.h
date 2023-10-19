@@ -1,8 +1,11 @@
 #ifndef __STATE_CONTROL_MACHINE__
 #define __STATE_CONTROL_MACHINE__
 
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
+
 
 #define FLAG_BYTE 0x7E
 #define A_BYTE 0x03
@@ -13,6 +16,8 @@
 #define C_REJ0 0x01
 #define C_REJ1 0x81
 #define C_DISC 0x0B
+#define C_I0 0x00
+#define C_I1 0x40
 
 
 typedef enum {

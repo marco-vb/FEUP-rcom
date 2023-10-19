@@ -1,6 +1,7 @@
 // Link layer protocol implementation
 
 #include "state_control_machine.h"
+#include "data_state_machine.h"
 #include "link_layer.h"
 #include <fcntl.h>
 #include <stdio.h>
@@ -29,6 +30,9 @@ void alarmHandler(int signal) {
     printf("Alarm #%d\n", alarmCount);
 }
 
+int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed);
+int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control);
+
 // Sends control frame and waits for response
 void sendControlFrame(uint8_t control) {
     uint8_t ans;
@@ -55,13 +59,19 @@ uint8_t receiveControlFrame() {
         control_machine_update(cm, response);
     }
 
+    // if (tries == 7) {
+    //     printf("Failed to receive control frame\n");
+    //     control_machine_destroy(cm);
+    //     return 0;
+    // }
+
     uint8_t result = cm->c;
     control_machine_destroy(cm);
 
     return result;
 }
 
-uint8_t* buildInformationFrame(uint8_t* buf, int bufSize) {
+uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSize) {
     int frameSize = bufSize + 6;
     uint8_t frame[frameSize];
     memset(frame, 0, frameSize);
@@ -79,15 +89,15 @@ uint8_t* buildInformationFrame(uint8_t* buf, int bufSize) {
         frame[dataBccIndex] ^= buf[i];
     }
 
-    uint8_t stuffed = (uint8_t*) malloc(frameSize * 2);
+    uint8_t* stuffed = (uint8_t*) malloc(frameSize * 2);
     memset(stuffed, 0, frameSize * 2);
-    int stuffedSize = addByteStuffing(frame, frameSize, stuffed);
+    *newFrameSize = addByteStuffing(frame, frameSize, stuffed);
 
     return stuffed;
 }
 
 // Stuffs the information frame and returns the stuffed array size
-int addByteStuffing(char* frame, int frameSize, char* stuffed) {
+int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed) {
     int stuffedSize = 0;
     stuffed[stuffedSize++] = FLAG;
     for (int i = 1; i < frameSize - 1; i++) {  // avoid flag at beginning and end
@@ -111,7 +121,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control) {
 
     while (alarmCount < parameters.nRetransmissions) {
         if (!alarmEnabled) {
-            ssize_t bytes = write(fd, frame, frameSize);
+            write(fd, frame, frameSize);
             alarm(parameters.timeout); // Set alarm to be triggered in X seconds
             alarmEnabled = TRUE;
         }
@@ -129,7 +139,6 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control) {
 
     return 0;
 }
-
 
 ////////////////////////////////////////////////
 // LLOPEN
@@ -186,9 +195,12 @@ int llopen(LinkLayer connectionParameters) {
 // LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const uint8_t* buf, int bufSize) {
-    uint8_t* frame = buildInformationFrame(buf, bufSize);
-    writeWithTimeout(frame, bufSize + 6, currentSequenceNumber ? C_RR1 : C_RR0);
 
+    int newFrameSize;
+    uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
+    writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0);
+
+    printf("Writing %d bytes\n", newFrameSize);
     currentSequenceNumber ^= 1;
     free(frame);
 
@@ -199,34 +211,57 @@ int llwrite(const uint8_t* buf, int bufSize) {
 // LLREAD
 ////////////////////////////////////////////////
 int llread(uint8_t* packet) {
-    // needs a function to read from serial port
-    // process frame first, then send something`
-    // readFromSerialPort(fd, &response, 1);  // TODO: do this with a state machine
-    return 0;
+    DataMachine* dm = data_machine_init();
+    uint8_t response;
+
+    while (!data_machine_is_finished(dm)) {
+        read(fd, &response, 1);
+        data_machine_update(dm, response);
+    }
+
+    if (data_machine_is_failed(dm)) {
+        sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);
+        printf("Something failed, sending REJ\n");
+        data_machine_destroy(dm);
+        return -1;
+    }
+
+
+    if (dm->c == C_I0) {
+        sendResponseFrame(C_RR0);
+    }
+    else if (dm->c == C_I1) {
+        sendResponseFrame(C_RR1);
+    }
+
+    printf("Read %d bytes\n", dm->data_size);
+    printf("Last byte: %x\n", dm->data[dm->data_size - 1]);
+
+    memcpy(packet, dm->data, dm->data_size);
+    int result = dm->data_size;
+    data_machine_destroy(dm);
+
+    currentSequenceNumber ^= 1;
+
+    return result;
 }
 
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
 int llclose(int showStatistics) {
-    // print statistics?
     if (showStatistics) {
-        printf("Suka blyad\n");
+        printf("No statistics\n");
     }
 
     if (parameters.role == LlTx) {
         sendControlFrame(C_DISC);
-        printf("Sent DISC and received DISC\n");
         sendResponseFrame(C_UA);
-        printf("Sent UA\n");
     }
     else {
         while (receiveControlFrame() != C_DISC) printf("Received something that is not DISC\n");
-        printf("Received DISC\n");
         sendResponseFrame(C_DISC);
-        printf("Sent DISC\n");
         while (receiveControlFrame() != C_UA) printf("Received something that is not UA\n");
-        printf("Received UA\n");
     }
 
     // Restore the old port settings
