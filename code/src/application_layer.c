@@ -66,7 +66,9 @@ void receiveFile(const char* filename) {
     ssize_t bytesRead = 0, packetNumber = 1;
 
     while ((bytesRead = llread(buf)) > 0) {
-        write(fd, buf, bytesRead);
+        assert(buf[0] == DATA);
+        size_t bytesToWrite = (buf[1] << 8) | buf[2];
+        write(fd, &buf[3], bytesToWrite);
         packetNumber++;
     }
 
