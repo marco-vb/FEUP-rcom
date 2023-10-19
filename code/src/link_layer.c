@@ -1,5 +1,7 @@
 // Link layer protocol implementation
 
+#include "state_control_machine.h"
+#include "data_state_machine.h"
 #include "link_layer.h"
 #include <fcntl.h>
 #include <stdio.h>
@@ -9,12 +11,16 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
+#include <signal.h>
 
 int fd;
 struct termios oldtio;
 struct termios newtio;
 
 LinkLayer parameters;
+
+// current sequence number for I frames (0 or 1)
+int currentSequenceNumber = 0;  // it's the next number that the writer will send
 
 int alarmEnabled = FALSE;
 int alarmCount = 0;
@@ -25,153 +31,133 @@ void alarmHandler(int signal) {
     printf("Alarm #%d\n", alarmCount);
 }
 
-typedef enum {
-    START,
-    FLAG_RCV,
-    A_RCV,
-    C_RCV_SET,
-    C_RCV_UA,
-    BCC_OK,
-    STOP
-} State;
+int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed);
+int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control);
 
-void process_set_frame(State *state, char byte) {
-    switch (*state) {
-        case C_RCV_SET:
-            if (byte == (A ^ C_SET)) {
-                *state = BCC_OK;
-            }
-            
-            else {
-                *state = START;
-            }
-            break;
+// Sends control frame and waits for response
+void sendControlFrame(uint8_t control) {
+    uint8_t ans;
+    if (control == C_SET) ans = C_UA;
+    if (control == C_DISC) ans = C_DISC;
 
-        case BCC_OK:
-            if (byte == FLAG) {
-                // send_ua_frame(fd);   // ?
-                *state = STOP;
-            }
-            else {
-                *state = START;
-            }
-            break;
-    }
+    uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
+    writeWithTimeout(buf, 5, ans);
 }
 
-
-void process_ua_frame(State *st, char byte) {
-    // after receiving C = UA
-    switch (*st) {        
-        case C_RCV_UA:
-            if (byte == (A ^ C_UA)) {
-                *st = BCC_OK;
-            }
-            else {
-                *st = START;        // error -> might need to do something else
-            }
-            break;
-        case BCC_OK:
-            if (byte == FLAG) {
-                *st = STOP; // received UA frame correctly
-            }
-            else {
-                *st = START;
-            }
-            break;   
-    }
+// Sends response frame without timeout
+void sendResponseFrame(uint8_t control) {
+    uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
+    write(fd, buf, 5);
 }
 
+// Receives control frame with state machine and returns the control byte
+uint8_t receiveControlFrame() {
+    ControlMachine* cm = control_machine_init();
+    uint8_t response;
 
+    while (!control_machine_is_finished(cm)) {
+        read(fd, &response, 1);
+        control_machine_update(cm, response);
+        if (parameters.role == LlTx && !alarmEnabled) {
+            // write with timeout alarm received -> stop reading and try to write again
+            control_machine_destroy(cm);
+            return 0xFF;
+        }
+    }
 
-// Here frame does not include the actual flags at the beginning and end of the frame
-// stuffed must have size >= 2 * frame_size
-int add_byte_stuffing(char *frame, int frame_size, char *stuffed) {
-    int stuffed_size = 0;
-    for (int i = 0; i < frame_size; i++) {
+    // if (tries == 7) {
+    //     printf("Failed to receive control frame\n");
+    //     control_machine_destroy(cm);
+    //     return 0;
+    // }
+
+    uint8_t result = cm->c;
+    control_machine_destroy(cm);
+
+    return result;
+}
+
+uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSize) {
+    int frameSize = bufSize + 6;
+    uint8_t frame[frameSize];
+    memset(frame, 0, frameSize);
+
+    frame[0] = FLAG;
+    frame[1] = A;
+    frame[2] = currentSequenceNumber ? C_I1 : C_I0;
+    frame[3] = frame[1] ^ frame[2];
+    frame[frameSize - 1] = FLAG;
+
+    int dataBccIndex = frameSize - 2;
+
+    for (int i = 0; i < bufSize; i++) {
+        frame[i + 4] = buf[i];
+        frame[dataBccIndex] ^= buf[i];
+    }
+
+    uint8_t* stuffed = (uint8_t*) malloc(frameSize * 2);
+    memset(stuffed, 0, frameSize * 2);
+    *newFrameSize = addByteStuffing(frame, frameSize, stuffed);
+
+    return stuffed;
+}
+
+// Stuffs the information frame and returns the stuffed array size
+int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed) {
+    int stuffedSize = 0;
+    stuffed[stuffedSize++] = FLAG;
+    for (int i = 1; i < frameSize - 1; i++) {  // avoid flag at beginning and end
         if (frame[i] == FLAG || frame[i] == ESCAPE) {
-            stuffed[stuffed_size] = ESCAPE;
-            stuffed[stuffed_size + 1] = frame[i] ^ ESCAPE_XOR;
-            stuffed_size += 2;
+            stuffed[stuffedSize++] = ESCAPE;
+            stuffed[stuffedSize++] = frame[i] ^ ESCAPE_XOR;
         }
         else {
-            stuffed[stuffed_size] = frame[i];
-            stuffed_size++;
+            stuffed[stuffedSize++] = frame[i];
         }
     }
-    return stuffed_size;
+    stuffed[stuffedSize++] = FLAG;
+    return stuffedSize;
 }
 
-int remove_byte_stuffing(char *frame, int frame_size, char *unstuffed) {
-    int unstuffed_size = 0;
-    for (int i = 0; i < frame_size; i++) {
-        if (frame[i] == ESCAPE) {   // there is always something after an escape (what if there are errors)
-            unstuffed[unstuffed_size] = frame[i + 1] ^ ESCAPE_XOR;
-            unstuffed_size++;
-            i++;
-        }
-        else {
-            unstuffed[unstuffed_size] = frame[i];
-            unstuffed_size++;
-        }
-    }
-    return unstuffed_size;
-}
-
-void send_control_frame(int fd, char control, int needs_timeout) {
-    char buf[5];
-    buf[0] = FLAG;
-    buf[1] = A;
-    buf[2] = control;
-    buf[3] = buf[1] ^ buf[2];
-    buf[4] = FLAG;
-    if (needs_timeout) write_with_timeout(fd, buf, 5);
-    else write(fd, buf, 5);
-}
-
-int write_with_timeout(int fd, const char *frame, int frame_size) {
-    char response[5];
-
-    int STOP = FALSE;
+int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control) {
     alarmCount = 0;
     alarmEnabled = FALSE;
-    while (alarmCount < parameters.nRetransmissions && !STOP) {
+
+    while (alarmCount < parameters.nRetransmissions) {
         if (!alarmEnabled) {
-            int bytes = write(fd, frame, frame_size);
-            printf("%d bytes written\n", bytes);
+            write(fd, frame, frameSize);
             alarm(parameters.timeout); // Set alarm to be triggered in X seconds
             alarmEnabled = TRUE;
         }
-        int bytes = read(fd, response, 5);
-        printf("%d bytes read\n", bytes);
-        if (TRUE) { // process bytes with a state machine (for now we assume they are correct)
-            // set -> ua; i -> rr, disc -> disc
 
-            STOP = TRUE;
+        if (receiveControlFrame() == control) {
             alarm(0);
+            break;
         }
-        printf("%d bytes read\n", bytes);
     }
-}
 
+    if (alarmCount == parameters.nRetransmissions) {
+        printf("Failed to send frame\n");
+        return -1;
+    }
+
+    return 0;
+}
 
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
-int llopen(LinkLayer connectionParameters)
-{
+int llopen(LinkLayer connectionParameters) {
     parameters = connectionParameters;
     fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
     
-    if (fd < 0)
-    {
+    if (fd < 0) {
         perror(connectionParameters.serialPort);
         exit(-1);
     }
 
     // Save current port settings
-    if (tcgetattr(fd, &oldtio) == -1)
-    {
+    if (tcgetattr(fd, &oldtio) == -1) {
         perror("tcgetattr");
         exit(-1);
     }
@@ -184,56 +170,46 @@ int llopen(LinkLayer connectionParameters)
     newtio.c_oflag = 0;
 
     newtio.c_lflag = 0;
-    newtio.c_cc[VTIME] = 0;
-    newtio.c_cc[VMIN] = 1;
+    newtio.c_cc[VTIME] = connectionParameters.role == LlTx ? 10 : 0;
+    newtio.c_cc[VMIN] = connectionParameters.role == LlTx ? 0 : 1;
 
     tcflush(fd, TCIOFLUSH);
 
-    if (tcsetattr(fd, TCSANOW, &newtio) == -1)
-    {
+    if (tcsetattr(fd, TCSANOW, &newtio) == -1) {
         perror("tcsetattr");
         exit(-1);
     }
     printf("New termios structure set\n");
 
     if (connectionParameters.role == LlTx) {
-        char buf[5];
-        buf[0] = FLAG;
-        buf[1] = A;
-        buf[2] = C_SET;
-        buf[3] = buf[1] ^ buf[2];
-        buf[4] = FLAG;
-        write_with_timeout(buf, 5, fd);
+        (void)signal(SIGALRM, alarmHandler);
+        sendControlFrame(C_SET);
+        printf("Sent SET and received UA\n");
     }
     else {
-        char buf[5];
-        read_from_serial_port(fd, buf, 5);
-        // send UA
+        while (receiveControlFrame() != C_SET) printf("Received something that is not SET\n");
+        printf("Received SET\n");
+        sendResponseFrame(C_UA);
+        printf("Sent UA\n");
     }
+
     return 1;
 }
 
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-int llwrite(const unsigned char *buf, int bufSize)
-{
-    // builds frame with data given by buf, and writes it to the serial port, using STOP & WAIT
-    int frame_size = bufSize + 6;
-    unsigned char frame[frame_size];
+int llwrite(const uint8_t* buf, int bufSize) {
 
-    frame[0] = FLAG;
-    frame[1] = A;
-    frame[2] = C_SET;
-    frame[3] = frame[1] ^ frame[2];
-    int data_bcc_index = frame_size - 2;
-    for (int i = 0; i < bufSize; i++) {
-        frame[i + 4] = buf[i];
-        frame[data_bcc_index] ^= buf[i];
-    }
-    frame[frame_size - 1] = FLAG;
+    int newFrameSize;
+    uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
+    if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
+        printf("Failed to send frame with timeout\n");
+        return -1;
+    };
 
-    write_with_timeout(fd, frame, frame_size);    // make sure it gets sent correctly
+    currentSequenceNumber ^= 1;
+    free(frame);
 
     return 0;
 }
@@ -241,36 +217,67 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
-int llread(unsigned char *packet)
-{
-    int max_frame_size = MAX_PAYLOAD_SIZE + 6;
-    char frame[max_frame_size];
-    int bytes_read = read(fd, frame, max_frame_size);
-    if (bytes_read == -1) {
-        perror("read");
-        exit(-1);
+int llread(uint8_t* packet) {
+    DataMachine* dm = data_machine_init();
+    uint8_t response;
+
+    while (!data_machine_is_finished(dm)) {
+        if (read(fd, &response, 1) > 0) {
+            // printf("Received byte %2x\n", response);
+            data_machine_update(dm, response);
+        }
+        // else {
+            // printf("Read unblocked with timeout in reader -> it should block (the connection was probably closed)\n");
+            // data_machine_destroy(dm);
+            // return -1;
+        // }
     }
-    printf("%d bytes read\n", bytes_read);
-    // process bytes_read with a state machine, then send response accordingly
-    // for now, we just send an acknowledgment for the set frame (UA)
-    // send_ua_frame(fd);
-    send_control_frame(fd, C_UA, FALSE);
-    return 0;
+    printf("Finished reading data machine\n");
+
+    if (data_machine_is_failed(dm)) {
+        sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);
+        printf("Something failed, sending REJ\n");
+        data_machine_destroy(dm);
+        return -1;
+    }
+
+
+    if (dm->c == C_I0) {
+        sendResponseFrame(C_RR0);
+    }
+    else if (dm->c == C_I1) {
+        sendResponseFrame(C_RR1);
+    }
+
+    memcpy(packet, dm->data, dm->data_size);
+    int result = dm->data_size;
+    data_machine_destroy(dm);
+
+    currentSequenceNumber ^= 1;
+
+    return result;
 }
 
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
-int llclose(int showStatistics)
-{
-    // print statistics?
+int llclose(int showStatistics) {
     if (showStatistics) {
-        printf("Suka blyad\n");
+        printf("No statistics\n");
+    }
+
+    if (parameters.role == LlTx) {
+        sendControlFrame(C_DISC);
+        sendResponseFrame(C_UA);
+    }
+    else {
+        while (receiveControlFrame() != C_DISC) printf("Received something that is not DISC\n");
+        sendResponseFrame(C_DISC);
+        while (receiveControlFrame() != C_UA) printf("Received something that is not UA\n");
     }
 
     // Restore the old port settings
-    if (tcsetattr(fd, TCSANOW, &oldtio) == -1)
-    {
+    if (tcsetattr(fd, TCSANOW, &oldtio) == -1) {
         perror("tcsetattr");
         exit(-1);
     }
