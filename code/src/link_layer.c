@@ -102,13 +102,11 @@ int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed) {
     stuffed[stuffedSize++] = FLAG;
     for (int i = 1; i < frameSize - 1; i++) {  // avoid flag at beginning and end
         if (frame[i] == FLAG || frame[i] == ESCAPE) {
-            stuffed[stuffedSize] = ESCAPE;
-            stuffed[stuffedSize + 1] = frame[i] ^ ESCAPE_XOR;
-            stuffedSize += 2;
+            stuffed[stuffedSize++] = ESCAPE;
+            stuffed[stuffedSize++] = frame[i] ^ ESCAPE_XOR;
         }
         else {
-            stuffed[stuffedSize] = frame[i];
-            stuffedSize++;
+            stuffed[stuffedSize++] = frame[i];
         }
     }
     stuffed[stuffedSize++] = FLAG;
@@ -200,7 +198,6 @@ int llwrite(const uint8_t* buf, int bufSize) {
     uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
     writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0);
 
-    printf("Writing %d bytes\n", newFrameSize);
     currentSequenceNumber ^= 1;
     free(frame);
 
@@ -233,9 +230,6 @@ int llread(uint8_t* packet) {
     else if (dm->c == C_I1) {
         sendResponseFrame(C_RR1);
     }
-
-    printf("Read %d bytes\n", dm->data_size);
-    printf("Last byte: %x\n", dm->data[dm->data_size - 1]);
 
     memcpy(packet, dm->data, dm->data_size);
     int result = dm->data_size;

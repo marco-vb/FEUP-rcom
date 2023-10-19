@@ -69,13 +69,12 @@ int receiveDataPacket(uint8_t* buf) {
 
     if (packet[0] != DATA) {
         printf("Error receiving data packet\n");
+        printf("Expected DATA, got %d\n", packet[0]);
         exit(-1);
     }
 
     int size = (packet[1] << 8) | packet[2];
     memcpy(buf, &packet[3], size);
-
-    printf("Received data packet with size %d\n", size);
 
     return size;
 }
@@ -93,15 +92,14 @@ void sendFile(const char* filename) {
     lseek(fd, 0, SEEK_SET);
 
     sendControlPacket(START, filesize);
-    printf("Sent control packet\n");
 
     uint8_t buf[MAX_PAYLOAD_SIZE];
     ssize_t bytesRead = 0, packetNumber = 1;
 
     while ((bytesRead = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0) {
         sendDataPacket(buf, bytesRead);
-        printf("Sent data packet %ld\n", packetNumber);
         packetNumber++;
+        sleep(1);
     }
 
     sendControlPacket(END, filesize);
@@ -119,17 +117,18 @@ void receiveFile(const char* filename) {
     }
 
     size_t filesize = receiveControlPacket(START, FILESIZE);
-    printf("Received control packet\n");
 
     uint8_t buf[MAX_PAYLOAD_SIZE];
-    ssize_t bytesRead = 0, packetNumber = 1;
+    ssize_t bytesRead = 0, bytesWritten = 0;
 
-    while ((bytesRead += receiveDataPacket(buf)) < filesize) {
-        printf("Received data packet %ld\n", packetNumber);
-        packetNumber++;
-        write(fd, buf, bytesRead);
+    while (bytesWritten < filesize) {
+        bytesRead = receiveDataPacket(buf);
+        bytesWritten += write(fd, buf, bytesRead);
+        printf("Wrote %ld bytes\n", bytesRead);
+        sleep(1);
     }
 
+    printf("Wrote %ld bytes\n", bytesWritten);
     receiveControlPacket(END, FILESIZE);
 
     close(fd);

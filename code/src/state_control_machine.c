@@ -24,22 +24,16 @@ void control_machine_update(ControlMachine* machine, uint8_t byte) {
         else if (byte == FLAG_BYTE) {
             machine->state = FLAG;
         }
-        else {
-            machine->state = START;
-        }
         break;
     case A:
         if (byte == C_SET || byte == C_UA || byte == C_DISC ||
-            byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || 
+            byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 ||
             byte == C_REJ1 || byte == C_I0 || byte == C_I1) {
             machine->state = C;
             machine->c = byte;
         }
         else if (byte == FLAG_BYTE) {
             machine->state = FLAG;
-        }
-        else {
-            machine->state = START;
         }
         break;
     case C:
@@ -49,20 +43,16 @@ void control_machine_update(ControlMachine* machine, uint8_t byte) {
         else if (byte == FLAG_BYTE) {
             machine->state = FLAG;
         }
-        else {
-            machine->state = START;
-        }
         break;
     case BCC:
         if (byte == FLAG_BYTE) {
             machine->state = STOP;
         }
-        else {
-            machine->state = START;
-        }
         break;
     case STOP:
         break;
+    default:
+        machine->state = START;
     }
 }
 

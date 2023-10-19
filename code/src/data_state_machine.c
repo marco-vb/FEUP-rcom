@@ -81,11 +81,9 @@ void data_machine_update(DataMachine* machine, uint8_t byte) {
         }
         else if (byte == ESCAPE_BYTE) {
             machine->state = DATA_ESCAPE;
-            printf("In escape byte\n");
         }
         else {
             machine->data[machine->data_size++] = byte;
-            printf("In data byte\n");
         }
         break;
     case DATA_ESCAPE:
