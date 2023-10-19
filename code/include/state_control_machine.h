@@ -8,8 +8,10 @@
 #define A_BYTE 0x03
 #define C_SET 0x03
 #define C_UA 0x07
-#define C_RR 0x05
-#define C_REJ 0x01
+#define C_RR0 0x05
+#define C_RR1 0x85
+#define C_REJ0 0x01
+#define C_REJ1 0x81
 #define C_DISC 0x0B
 
 

@@ -29,7 +29,9 @@ void control_machine_update(ControlMachine* machine, uint8_t byte) {
         }
         break;
     case A:
-        if (byte == C_SET || byte == C_UA || byte == C_DISC || byte == C_RR || byte == C_REJ) {
+        if (byte == C_SET || byte == C_UA || byte == C_DISC ||
+            byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || 
+            byte == C_REJ1) {
             machine->state = C;
             machine->c = byte;
         }

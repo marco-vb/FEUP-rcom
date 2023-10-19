@@ -33,9 +33,16 @@ void alarmHandler(int signal) {
 void sendControlFrame(uint8_t control) {
     uint8_t ans;
     if (control == C_SET) ans = C_UA;
+    if (control == C_DISC) ans = C_DISC;
 
     uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
     writeWithTimeout(buf, 5, ans);
+}
+
+// Sends response frame without timeout
+void sendResponseFrame(uint8_t control) {
+    uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
+    write(fd, buf, 5);
 }
 
 // Receives control frame with state machine and returns the control byte
@@ -54,8 +61,32 @@ uint8_t receiveControlFrame() {
     return result;
 }
 
+uint8_t* buildInformationFrame(uint8_t* buf, int bufSize) {
+    int frameSize = bufSize + 6;
+    uint8_t frame[frameSize];
+    memset(frame, 0, frameSize);
 
-// stuffed must have size >= 2 * frame_size
+    frame[0] = FLAG;
+    frame[1] = A;
+    frame[2] = currentSequenceNumber ? C_I1 : C_I0;
+    frame[3] = frame[1] ^ frame[2];
+    frame[frameSize - 1] = FLAG;
+
+    int dataBccIndex = frameSize - 2;
+
+    for (int i = 0; i < bufSize; i++) {
+        frame[i + 4] = buf[i];
+        frame[dataBccIndex] ^= buf[i];
+    }
+
+    uint8_t stuffed = (uint8_t*) malloc(frameSize * 2);
+    memset(stuffed, 0, frameSize * 2);
+    int stuffedSize = addByteStuffing(frame, frameSize, stuffed);
+
+    return stuffed;
+}
+
+// Stuffs the information frame and returns the stuffed array size
 int addByteStuffing(char* frame, int frameSize, char* stuffed) {
     int stuffedSize = 0;
     stuffed[stuffedSize++] = FLAG;
@@ -90,6 +121,12 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control) {
             break;
         }
     }
+
+    if (alarmCount == parameters.nRetransmissions) {
+        printf("Failed to send frame\n");
+        return -1;
+    }
+
     return 0;
 }
 
@@ -133,11 +170,15 @@ int llopen(LinkLayer connectionParameters) {
 
     if (connectionParameters.role == LlTx) {
         sendControlFrame(C_SET);
+        printf("Sent SET and received UA\n");
     }
     else {
-        receiveControlFrame(fd, C_SET, processFrameSET);
-        sendControlFrame(fd, C_UA);
+        while (receiveControlFrame() != C_SET) printf("Received something that is not SET\n");
+        printf("Received SET\n");
+        sendResponseFrame(C_UA);
+        printf("Sent UA\n");
     }
+
     return 1;
 }
 
@@ -145,25 +186,12 @@ int llopen(LinkLayer connectionParameters) {
 // LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const uint8_t* buf, int bufSize) {
-    // builds frame with data given by buf, and writes it to the serial port, using STOP & WAIT
-    int frameSize = bufSize + 6;
-    uint8_t frame[frameSize];
-    memset(frame, 0, frameSize);
+    uint8_t* frame = buildInformationFrame(buf, bufSize);
+    writeWithTimeout(frame, bufSize + 6, currentSequenceNumber ? C_RR1 : C_RR0);
 
-    frame[0] = FLAG;
-    frame[1] = A;
-    frame[2] = currentSequenceNumber == 0 ? C_I0 : C_I1;
-    frame[3] = frame[1] ^ frame[2];
-    frame[frameSize - 1] = FLAG;
+    currentSequenceNumber ^= 1;
+    free(frame);
 
-    int dataBccIndex = frameSize - 2;
-
-    for (int i = 0; i < bufSize; i++) {
-        frame[i + 4] = buf[i];
-        frame[dataBccIndex] ^= buf[i];
-    }
-
-    writeWithTimeout(fd, frame, frameSize);
     return 0;
 }
 
@@ -172,7 +200,7 @@ int llwrite(const uint8_t* buf, int bufSize) {
 ////////////////////////////////////////////////
 int llread(uint8_t* packet) {
     // needs a function to read from serial port
-    // process frame first, then send something
+    // process frame first, then send something`
     // readFromSerialPort(fd, &response, 1);  // TODO: do this with a state machine
     return 0;
 }
@@ -184,6 +212,21 @@ int llclose(int showStatistics) {
     // print statistics?
     if (showStatistics) {
         printf("Suka blyad\n");
+    }
+
+    if (parameters.role == LlTx) {
+        sendControlFrame(C_DISC);
+        printf("Sent DISC and received DISC\n");
+        sendResponseFrame(C_UA);
+        printf("Sent UA\n");
+    }
+    else {
+        while (receiveControlFrame() != C_DISC) printf("Received something that is not DISC\n");
+        printf("Received DISC\n");
+        sendResponseFrame(C_DISC);
+        printf("Sent DISC\n");
+        while (receiveControlFrame() != C_UA) printf("Received something that is not UA\n");
+        printf("Received UA\n");
     }
 
     // Restore the old port settings
