@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
+#include <signal.h>
 
 int fd;
 struct termios oldtio;
@@ -57,6 +58,11 @@ uint8_t receiveControlFrame() {
     while (!control_machine_is_finished(cm)) {
         read(fd, &response, 1);
         control_machine_update(cm, response);
+        if (parameters.role == LlTx && !alarmEnabled) {
+            // write with timeout alarm received -> stop reading and try to write again
+            control_machine_destroy(cm);
+            return 0xFF;
+        }
     }
 
     // if (tries == 7) {
@@ -144,7 +150,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control) {
 int llopen(LinkLayer connectionParameters) {
     parameters = connectionParameters;
     fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
-
+    
     if (fd < 0) {
         perror(connectionParameters.serialPort);
         exit(-1);
@@ -164,8 +170,8 @@ int llopen(LinkLayer connectionParameters) {
     newtio.c_oflag = 0;
 
     newtio.c_lflag = 0;
-    newtio.c_cc[VTIME] = 0;
-    newtio.c_cc[VMIN] = 1;
+    newtio.c_cc[VTIME] = connectionParameters.role == LlTx ? 10 : 0;
+    newtio.c_cc[VMIN] = connectionParameters.role == LlTx ? 0 : 1;
 
     tcflush(fd, TCIOFLUSH);
 
@@ -176,6 +182,7 @@ int llopen(LinkLayer connectionParameters) {
     printf("New termios structure set\n");
 
     if (connectionParameters.role == LlTx) {
+        (void)signal(SIGALRM, alarmHandler);
         sendControlFrame(C_SET);
         printf("Sent SET and received UA\n");
     }
@@ -196,7 +203,10 @@ int llwrite(const uint8_t* buf, int bufSize) {
 
     int newFrameSize;
     uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
-    writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0);
+    if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
+        printf("Failed to send frame with timeout\n");
+        return -1;
+    };
 
     currentSequenceNumber ^= 1;
     free(frame);
@@ -212,9 +222,17 @@ int llread(uint8_t* packet) {
     uint8_t response;
 
     while (!data_machine_is_finished(dm)) {
-        read(fd, &response, 1);
-        data_machine_update(dm, response);
+        if (read(fd, &response, 1) > 0) {
+            // printf("Received byte %2x\n", response);
+            data_machine_update(dm, response);
+        }
+        // else {
+            // printf("Read unblocked with timeout in reader -> it should block (the connection was probably closed)\n");
+            // data_machine_destroy(dm);
+            // return -1;
+        // }
     }
+    printf("Finished reading data machine\n");
 
     if (data_machine_is_failed(dm)) {
         sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);

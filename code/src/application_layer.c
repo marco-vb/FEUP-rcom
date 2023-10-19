@@ -109,7 +109,7 @@ void sendFile(const char* filename) {
 
 void receiveFile(const char* filename) {
     printf("Receiving file %s\n", filename);
-    int fd = open(filename, O_WRONLY);
+    int fd = open(filename, O_WRONLY | O_CREAT, 0666);
 
     if (fd == -1) {
         printf("Error opening file\n");
