@@ -13,6 +13,8 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include "action.h"
+
 int fd;
 struct termios oldtio;
 struct termios newtio;
@@ -32,7 +34,13 @@ void alarmHandler(int signal) {
 }
 
 int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed);
-int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control);
+int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions);
+
+// actions
+void toggleSequenceNumber();
+void stopAlarm();
+void resetAlarm();
+
 
 // Sends control frame and waits for response
 void sendControlFrame(uint8_t control) {
@@ -41,7 +49,10 @@ void sendControlFrame(uint8_t control) {
     if (control == C_DISC) ans = C_DISC;
 
     uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
-    writeWithTimeout(buf, 5, ans);
+    
+    Actions *actions = createActions(1, createAction(ans, stopAlarm));
+    writeWithTimeout(buf, 5, actions);
+    destroyActions(actions);
 }
 
 // Sends response frame without timeout
@@ -56,11 +67,14 @@ uint8_t receiveControlFrame() {
     uint8_t response;
 
     while (!control_machine_is_finished(cm)) {
-        read(fd, &response, 1);
-        control_machine_update(cm, response);
+        if (read(fd, &response, 1) > 0) {
+            printf("Received byte %2x\n", response);
+            control_machine_update(cm, response);
+        }
         if (parameters.role == LlTx && !alarmEnabled) {
             // write with timeout alarm received -> stop reading and try to write again
             control_machine_destroy(cm);
+            printf("timed out inside receiveControlFrame\n");
             return 0xFF;
         }
     }
@@ -73,7 +87,7 @@ uint8_t receiveControlFrame() {
 
     uint8_t result = cm->c;
     control_machine_destroy(cm);
-
+    printf("received control frame %2x\n", result);
     return result;
 }
 
@@ -119,21 +133,41 @@ int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed) {
     return stuffedSize;
 }
 
-int writeWithTimeout(const uint8_t* frame, int frameSize, uint8_t control) {
+int stopTimeout = FALSE;
+
+void toggleSequenceNumber() {
+    printf("toggled sequence number and ");
+    currentSequenceNumber ^= 1;
+    stopAlarm();
+}
+void resetAlarm() {
+    printf("Reset alarm\n");
     alarmCount = 0;
     alarmEnabled = FALSE;
+    alarm(3);
+}
+void stopAlarm() {
+    printf("Stopped alarm\n");
+    alarm(0);
+    stopTimeout = TRUE;
+}
 
-    while (alarmCount < parameters.nRetransmissions) {
+int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions) {
+    alarmCount = 0;
+    alarmEnabled = FALSE;
+    stopTimeout = FALSE;
+    while (alarmCount < parameters.nRetransmissions && !stopTimeout) {
         if (!alarmEnabled) {
             write(fd, frame, frameSize);
             alarm(parameters.timeout); // Set alarm to be triggered in X seconds
             alarmEnabled = TRUE;
         }
+        performAction(actions, receiveControlFrame());
 
-        if (receiveControlFrame() == control) {
-            alarm(0);
-            break;
-        }
+        // if (receiveControlFrame() == control) {
+        //     alarm(0);
+        //     break;
+        // }
     }
 
     if (alarmCount == parameters.nRetransmissions) {
@@ -196,6 +230,7 @@ int llopen(LinkLayer connectionParameters) {
     return 1;
 }
 
+
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
@@ -203,14 +238,19 @@ int llwrite(const uint8_t* buf, int bufSize) {
 
     int newFrameSize;
     uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
-    if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
+    
+    // if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
+    Actions *actions = createActions(2,
+                createAction(currentSequenceNumber ? C_RR1 : C_RR0, toggleSequenceNumber),
+                createAction(currentSequenceNumber ? C_REJ1 : C_REJ0, resetAlarm));
+    if (writeWithTimeout(frame, newFrameSize, actions) == -1) {
+        free(frame);
+        destroyActions(actions);
         printf("Failed to send frame with timeout\n");
         return -1;
-    };
-
-    currentSequenceNumber ^= 1;
+    }
+    destroyActions(actions);
     free(frame);
-
     return 0;
 }
 

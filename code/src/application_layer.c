@@ -38,8 +38,7 @@ void sendDataPacket(uint8_t* buf, ssize_t size) {
 
 size_t receiveControlPacket(uint8_t controlField, uint8_t flag) {
     uint8_t buf[MAX_PAYLOAD_SIZE];
-
-    llread(buf);
+    while (llread(buf) == -1);
 
     if (buf[0] != controlField) {
         printf("Error receiving control packet\n");
@@ -65,7 +64,7 @@ size_t receiveControlPacket(uint8_t controlField, uint8_t flag) {
 
 int receiveDataPacket(uint8_t* buf) {
     uint8_t packet[MAX_PAYLOAD_SIZE + 3];
-    llread(packet);
+    while (llread(packet) == -1);
 
     if (packet[0] != DATA) {
         printf("Error receiving data packet\n");
