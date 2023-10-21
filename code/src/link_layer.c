@@ -241,7 +241,7 @@ int llwrite(const uint8_t* buf, int bufSize) {
     
     // if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
     Actions *actions = createActions(2,
-                createAction(currentSequenceNumber ? C_RR1 : C_RR0, toggleSequenceNumber),
+                createAction(currentSequenceNumber ? C_RR0 : C_RR1, toggleSequenceNumber),
                 createAction(currentSequenceNumber ? C_REJ1 : C_REJ0, resetAlarm));
     if (writeWithTimeout(frame, newFrameSize, actions) == -1) {
         free(frame);
@@ -281,12 +281,18 @@ int llread(uint8_t* packet) {
         return -1;
     }
 
-
+    int correctSequenceNumber = 0;
     if (dm->c == C_I0) {
-        sendResponseFrame(C_RR0);
+        sendResponseFrame(C_RR1);   // TODO: change this to "send RR1"
+        correctSequenceNumber = currentSequenceNumber == 0;
     }
     else if (dm->c == C_I1) {
-        sendResponseFrame(C_RR1);
+        sendResponseFrame(C_RR0);   // TODO: change this to "send RR0"
+        correctSequenceNumber = currentSequenceNumber == 1;
+    }
+    if (!correctSequenceNumber) {
+        data_machine_destroy(dm);
+        return -1;
     }
 
     memcpy(packet, dm->data, dm->data_size);
