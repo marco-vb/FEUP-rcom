@@ -7,17 +7,9 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "ll_macros.h"
 
 #define MAX_DATA_SIZE 3000
-
-#define FLAG_BYTE 0x7E
-#define A_BYTE 0x03
-#define C_I0 0x00
-#define C_I1 0x40
-#define ESCAPE_BYTE 0x7D
-#define ESCAPED_FLAG_BYTE 0x5E
-#define ESCAPED_ESCAPE_BYTE 0x5D
-
 
 typedef enum {
     DATA_START,

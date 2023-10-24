@@ -1,8 +1,10 @@
 // Link layer protocol implementation
-
-#include "state_control_machine.h"
+#include "ll_macros.h"
 #include "data_state_machine.h"
 #include "link_layer.h"
+#include "state_control_machine.h"
+#include "action.h"
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +14,8 @@
 #include <termios.h>
 #include <unistd.h>
 #include <signal.h>
+#include <time.h>
 
-#include "action.h"
 
 int fd;
 struct termios oldtio;
@@ -27,9 +29,16 @@ int currentSequenceNumber = 0;  // it's the next number that the writer will sen
 int alarmEnabled = FALSE;
 int alarmCount = 0;
 
+int totalFramesInfo = 0;
+int totalFramesControl = 0;
+int totalAlarmTimeouts = 0;
+int totalREJ = 0;
+time_t currTime;
+
 void alarmHandler(int signal) {
     alarmEnabled = FALSE;
     alarmCount++;
+    totalAlarmTimeouts++;
     printf("Alarm #%d\n", alarmCount);
 }
 
@@ -48,16 +57,17 @@ void sendControlFrame(uint8_t control) {
     if (control == C_SET) ans = C_UA;
     if (control == C_DISC) ans = C_DISC;
 
-    uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
+    uint8_t buf [] = { FLAG_BYTE, A_BYTE, control, A_BYTE ^ control, FLAG_BYTE };
     
     Actions *actions = createActions(1, createAction(ans, stopAlarm));
     writeWithTimeout(buf, 5, actions);
+    totalFramesControl++;
     destroyActions(actions);
 }
 
 // Sends response frame without timeout
 void sendResponseFrame(uint8_t control) {
-    uint8_t buf [] = { FLAG, A, control, A ^ control, FLAG };
+    uint8_t buf [] = { FLAG_BYTE, A_BYTE, control, A_BYTE ^ control, FLAG_BYTE };
     write(fd, buf, 5);
 }
 
@@ -96,11 +106,11 @@ uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSiz
     uint8_t frame[frameSize];
     memset(frame, 0, frameSize);
 
-    frame[0] = FLAG;
-    frame[1] = A;
+    frame[0] = FLAG_BYTE;
+    frame[1] = A_BYTE;
     frame[2] = currentSequenceNumber ? C_I1 : C_I0;
     frame[3] = frame[1] ^ frame[2];
-    frame[frameSize - 1] = FLAG;
+    frame[frameSize - 1] = FLAG_BYTE;
 
     int dataBccIndex = frameSize - 2;
 
@@ -119,29 +129,30 @@ uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSiz
 // Stuffs the information frame and returns the stuffed array size
 int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed) {
     int stuffedSize = 0;
-    stuffed[stuffedSize++] = FLAG;
+    stuffed[stuffedSize++] = FLAG_BYTE;
     for (int i = 1; i < frameSize - 1; i++) {  // avoid flag at beginning and end
-        if (frame[i] == FLAG || frame[i] == ESCAPE) {
-            stuffed[stuffedSize++] = ESCAPE;
+        if (frame[i] == FLAG_BYTE || frame[i] == ESCAPE_BYTE) {
+            stuffed[stuffedSize++] = ESCAPE_BYTE;
             stuffed[stuffedSize++] = frame[i] ^ ESCAPE_XOR;
         }
         else {
             stuffed[stuffedSize++] = frame[i];
         }
     }
-    stuffed[stuffedSize++] = FLAG;
+    stuffed[stuffedSize++] = FLAG_BYTE;
     return stuffedSize;
 }
 
 int stopTimeout = FALSE;
 
 void toggleSequenceNumber() {
-    printf("toggled sequence number and ");
+    // printf("toggled sequence number and ");
     currentSequenceNumber ^= 1;
     stopAlarm();
 }
 void resetAlarm() {
-    printf("Reset alarm\n");
+    printf("Received REJ, reset alarm\n");
+    totalREJ++;
     alarmCount = 0;
     alarmEnabled = FALSE;
     alarm(3);
@@ -182,6 +193,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions) {
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters) {
+    currTime = time(NULL);
     parameters = connectionParameters;
     fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
     
@@ -224,9 +236,11 @@ int llopen(LinkLayer connectionParameters) {
         while (receiveControlFrame() != C_SET) printf("Received something that is not SET\n");
         printf("Received SET\n");
         sendResponseFrame(C_UA);
+        totalFramesControl++;
         printf("Sent UA\n");
     }
-
+    printf("Finished llopen in %ld seconds\n", time(NULL) - currTime);
+    currTime = time(NULL);
     return 1;
 }
 
@@ -238,7 +252,7 @@ int llwrite(const uint8_t* buf, int bufSize) {
 
     int newFrameSize;
     uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
-    
+    totalFramesInfo++;
     // if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
     Actions *actions = createActions(2,
                 createAction(currentSequenceNumber ? C_RR0 : C_RR1, toggleSequenceNumber),
@@ -276,6 +290,7 @@ int llread(uint8_t* packet) {
 
     if (data_machine_is_failed(dm)) {
         sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);
+        totalREJ++;
         printf("Something failed, sending REJ\n");
         data_machine_destroy(dm);
         return -1;
@@ -285,10 +300,12 @@ int llread(uint8_t* packet) {
     if (dm->c == C_I0) {
         sendResponseFrame(C_RR1);   // TODO: change this to "send RR1"
         correctSequenceNumber = currentSequenceNumber == 0;
+        totalFramesInfo++;
     }
     else if (dm->c == C_I1) {
         sendResponseFrame(C_RR0);   // TODO: change this to "send RR0"
         correctSequenceNumber = currentSequenceNumber == 1;
+        totalFramesInfo++;
     }
     if (!correctSequenceNumber) {
         data_machine_destroy(dm);
@@ -308,18 +325,16 @@ int llread(uint8_t* packet) {
 // LLCLOSE
 ////////////////////////////////////////////////
 int llclose(int showStatistics) {
-    if (showStatistics) {
-        printf("No statistics\n");
-    }
-
     if (parameters.role == LlTx) {
         sendControlFrame(C_DISC);
         sendResponseFrame(C_UA);
     }
     else {
         while (receiveControlFrame() != C_DISC) printf("Received something that is not DISC\n");
+        totalFramesControl++;
         sendResponseFrame(C_DISC);
         while (receiveControlFrame() != C_UA) printf("Received something that is not UA\n");
+        totalFramesControl++;
     }
 
     // Restore the old port settings
@@ -327,8 +342,24 @@ int llclose(int showStatistics) {
         perror("tcsetattr");
         exit(-1);
     }
-
-    close(fd);
-
+    if (showStatistics) {
+        if (parameters.role == LlTx) {
+            printf("Total frames sent: %d\n", totalFramesInfo + totalFramesControl);
+            printf("Total frames sent (info): %d\n", totalFramesInfo);
+            printf("Total frames sent (control): %d\n", totalFramesControl);
+            printf("Total alarm timeouts: %d\n", totalAlarmTimeouts);
+            printf("Total REJ received: %d\n", totalREJ);
+            printf("Total time spent on information frames: %ld seconds\n", time(NULL) - currTime);
+        }
+        else {
+            printf("Total frames received: %d\n", totalFramesInfo + totalFramesControl);
+            printf("Total frames received (info): %d\n", totalFramesInfo);
+            printf("Total frames received (control): %d\n", totalFramesControl);
+            printf("Total REJ sent: %d\n", totalREJ);
+            printf("Total time spent on information frames: %ld seconds\n", time(NULL) - currTime);
+            
+            printf("Total information frames received with errors: %d vs without errors: %d\n", totalREJ, totalFramesInfo - totalREJ);
+        }
+    }
     return 1;
 }

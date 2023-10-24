@@ -135,7 +135,7 @@ int main(int argc, char *argv[])
             {
                 if (cableMode == CableModeNoise)
                 {
-                    addNoiseToBuffer(tx2rx, 0);
+                    addNoiseToBuffer(tx2rx, rand() % bytesFromTx);
                 }
 
                 int bytesToRx = write(fdRx, tx2rx, bytesFromTx);
