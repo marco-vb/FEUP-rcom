@@ -291,9 +291,24 @@ int llread(uint8_t* packet) {
     printf("Finished reading data machine\n");
 
     if (data_machine_is_failed(dm)) {
-        sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);
-        totalREJ++;
-        printf("Something failed, sending REJ\n");
+        if (dm->c == C_I0 && currentSequenceNumber == 0) {
+            printf("Something failed, sending REJ\n");
+            sendResponseFrame(C_REJ0);
+            totalREJ++;
+        }
+        else if (dm->c == C_I1 && currentSequenceNumber == 1) {
+            printf("Something failed, sending REJ\n");
+            sendResponseFrame(C_REJ1);
+            totalREJ++;
+        }
+        else {
+            // error in I frame, but we have already received it before (RR got lost)
+            sendResponseFrame(dm->c == C_I0 ? C_RR1 : C_RR0);
+        }
+        
+        // sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);
+        
+        
         data_machine_destroy(dm);
         return -1;
     }
