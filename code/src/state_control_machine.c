@@ -17,7 +17,7 @@ void control_machine_update(ControlMachine* machine, uint8_t byte) {
         }
         break;
     case FLAG:
-        if (byte == A_BYTE) {
+        if (byte == A_BYTE || byte == A_BYTE_OTHER) {
             machine->state = A;
             machine->a = byte;
         }

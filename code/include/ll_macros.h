@@ -3,6 +3,7 @@
 
 #define FLAG_BYTE 0x7E
 #define A_BYTE 0x03
+#define A_BYTE_OTHER 0x01
 
 #define C_SET 0x03
 #define C_UA 0x07

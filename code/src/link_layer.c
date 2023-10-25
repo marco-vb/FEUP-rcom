@@ -54,10 +54,11 @@ void resetAlarm();
 // Sends control frame and waits for response
 void sendControlFrame(uint8_t control) {
     uint8_t ans;
-    if (control == C_SET) ans = C_UA;
-    if (control == C_DISC) ans = C_DISC;
+    if (control == C_SET || (control == C_DISC && parameters.role == LlRx)) ans = C_UA;
+    if (control == C_DISC && parameters.role == LlTx) ans = C_DISC;
 
-    uint8_t buf [] = { FLAG_BYTE, A_BYTE, control, A_BYTE ^ control, FLAG_BYTE };
+    uint8_t a = parameters.role == LlTx ? A_BYTE : A_BYTE_OTHER;
+    uint8_t buf [] = { FLAG_BYTE, a, control, a ^ control, FLAG_BYTE };
     
     Actions *actions = createActions(1, createAction(ans, stopAlarm));
     writeWithTimeout(buf, 5, actions);
@@ -183,7 +184,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions) {
 
     if (alarmCount == parameters.nRetransmissions) {
         printf("Failed to send frame\n");
-        return -1;
+        exit(-1);
     }
 
     return 0;
@@ -226,9 +227,10 @@ int llopen(LinkLayer connectionParameters) {
         exit(-1);
     }
     printf("New termios structure set\n");
+    (void)signal(SIGALRM, alarmHandler);
 
     if (connectionParameters.role == LlTx) {
-        (void)signal(SIGALRM, alarmHandler);
+        
         sendControlFrame(C_SET);
         printf("Sent SET and received UA\n");
     }
@@ -265,7 +267,7 @@ int llwrite(const uint8_t* buf, int bufSize) {
     }
     destroyActions(actions);
     free(frame);
-    return 0;
+    return bufSize;
 }
 
 ////////////////////////////////////////////////
@@ -300,7 +302,6 @@ int llread(uint8_t* packet) {
     if (dm->c == C_I0) {
         sendResponseFrame(C_RR1);   // TODO: change this to "send RR1"
         correctSequenceNumber = currentSequenceNumber == 0;
-        totalFramesInfo++;
     }
     else if (dm->c == C_I1) {
         sendResponseFrame(C_RR0);   // TODO: change this to "send RR0"
@@ -332,8 +333,7 @@ int llclose(int showStatistics) {
     else {
         while (receiveControlFrame() != C_DISC) printf("Received something that is not DISC\n");
         totalFramesControl++;
-        sendResponseFrame(C_DISC);
-        while (receiveControlFrame() != C_UA) printf("Received something that is not UA\n");
+        sendControlFrame(C_DISC);
         totalFramesControl++;
     }
 
