@@ -37,7 +37,6 @@ int performAction(Actions *actions, uint8_t control) {
     for (int i = 0; i < actions->size; i++) {
         if (actions->actions[i]->control == control) {
             if (actions->actions[i]->actionFunction) actions->actions[i]->actionFunction();
-            printf("Performed action for control %2x\n", control);
             return i;
         }
     }

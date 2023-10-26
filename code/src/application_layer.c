@@ -123,11 +123,11 @@ void receiveFile(const char* filename) {
     while (bytesWritten < filesize) {
         bytesRead = receiveDataPacket(buf);
         bytesWritten += write(fd, buf, bytesRead);
-        printf("Wrote %ld bytes\n", bytesRead);
+        printf("Wrote %ld bytes into the file\n", bytesRead);
         sleep(1);
     }
 
-    printf("Wrote %ld bytes\n", bytesWritten);
+    printf("Wrote a total of %ld bytes into the file\n", bytesWritten);
     receiveControlPacket(END, FILESIZE);
 
     close(fd);
