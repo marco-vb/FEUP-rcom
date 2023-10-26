@@ -29,8 +29,8 @@ void sendDataPacket(uint8_t* buf, ssize_t size) {
     uint8_t packet[MAX_PAYLOAD_SIZE + 3];
 
     packet[0] = DATA;
-    packet[1] = (size >> 8) & 0xFF;
-    packet[2] = size & 0xFF;
+    packet[1] = size >> 8;
+    packet[2] = size;
     memcpy(&packet[3], buf, size);
 
     llwrite(packet, size + 3);
@@ -98,7 +98,7 @@ void sendFile(const char* filename) {
     while ((bytesRead = read(fd, buf, MAX_PAYLOAD_SIZE)) > 0) {
         sendDataPacket(buf, bytesRead);
         packetNumber++;
-        sleep(1);
+        //sleep(1);
     }
 
     sendControlPacket(END, filesize);
@@ -124,10 +124,10 @@ void receiveFile(const char* filename) {
         bytesRead = receiveDataPacket(buf);
         bytesWritten += write(fd, buf, bytesRead);
         printf("Wrote %ld bytes\n", bytesRead);
-        sleep(1);
+        //sleep(1);
     }
 
-    printf("Wrote %ld bytes\n", bytesWritten);
+    printf("Wrote a total of %ld bytes\n", bytesWritten);
     receiveControlPacket(END, FILESIZE);
 
     close(fd);

@@ -43,7 +43,7 @@ void alarmHandler(int signal) {
 }
 
 int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed);
-int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions);
+int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions);
 
 // actions
 void toggleSequenceNumber();
@@ -59,8 +59,8 @@ void sendControlFrame(uint8_t control) {
 
     uint8_t a = parameters.role == LlTx ? A_BYTE : A_BYTE_OTHER;
     uint8_t buf [] = { FLAG_BYTE, a, control, a ^ control, FLAG_BYTE };
-    
-    Actions *actions = createActions(1, createAction(ans, stopAlarm));
+
+    Actions* actions = createActions(1, createAction(ans, stopAlarm));
     writeWithTimeout(buf, 5, actions);
     totalFramesControl++;
     destroyActions(actions);
@@ -89,12 +89,6 @@ uint8_t receiveControlFrame() {
             return 0xFF;
         }
     }
-
-    // if (tries == 7) {
-    //     printf("Failed to receive control frame\n");
-    //     control_machine_destroy(cm);
-    //     return 0;
-    // }
 
     uint8_t result = cm->c;
     control_machine_destroy(cm);
@@ -164,7 +158,7 @@ void stopAlarm() {
     stopTimeout = TRUE;
 }
 
-int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions) {
+int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions) {
     alarmCount = 0;
     alarmEnabled = FALSE;
     stopTimeout = FALSE;
@@ -175,11 +169,6 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions *actions) {
             alarmEnabled = TRUE;
         }
         performAction(actions, receiveControlFrame());
-
-        // if (receiveControlFrame() == control) {
-        //     alarm(0);
-        //     break;
-        // }
     }
 
     if (alarmCount == parameters.nRetransmissions) {
@@ -197,7 +186,7 @@ int llopen(LinkLayer connectionParameters) {
     currTime = time(NULL);
     parameters = connectionParameters;
     fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
-    
+
     if (fd < 0) {
         perror(connectionParameters.serialPort);
         exit(-1);
@@ -226,11 +215,12 @@ int llopen(LinkLayer connectionParameters) {
         perror("tcsetattr");
         exit(-1);
     }
+
     printf("New termios structure set\n");
-    (void)signal(SIGALRM, alarmHandler);
+    signal(SIGALRM, alarmHandler);
 
     if (connectionParameters.role == LlTx) {
-        
+
         sendControlFrame(C_SET);
         printf("Sent SET and received UA\n");
     }
@@ -255,10 +245,11 @@ int llwrite(const uint8_t* buf, int bufSize) {
     int newFrameSize;
     uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
     totalFramesInfo++;
-    // if (writeWithTimeout(frame, newFrameSize, currentSequenceNumber ? C_RR1 : C_RR0) == -1) {
-    Actions *actions = createActions(2,
-                createAction(currentSequenceNumber ? C_RR0 : C_RR1, toggleSequenceNumber),
-                createAction(currentSequenceNumber ? C_REJ1 : C_REJ0, resetAlarm));
+
+    Actions* actions = createActions(2,
+        createAction(currentSequenceNumber ? C_RR0 : C_RR1, toggleSequenceNumber),
+        createAction(currentSequenceNumber ? C_REJ1 : C_REJ0, resetAlarm));
+
     if (writeWithTimeout(frame, newFrameSize, actions) == -1) {
         free(frame);
         destroyActions(actions);
@@ -275,12 +266,12 @@ int llwrite(const uint8_t* buf, int bufSize) {
 ////////////////////////////////////////////////
 int llread(uint8_t* packet) {
     DataMachine* dm = data_machine_init();
-    uint8_t response;
+    uint8_t byte;
 
     while (!data_machine_is_finished(dm)) {
-        if (read(fd, &response, 1) > 0) {
+        if (read(fd, &byte, 1) > 0) {
             // printf("Received byte %2x\n", response);
-            data_machine_update(dm, response);
+            data_machine_update(dm, byte);
         }
         // else {
             // printf("Read unblocked with timeout in reader -> it should block (the connection was probably closed)\n");
@@ -305,10 +296,10 @@ int llread(uint8_t* packet) {
             // error in I frame, but we have already received it before (RR got lost)
             sendResponseFrame(dm->c == C_I0 ? C_RR1 : C_RR0);
         }
-        
+
         // sendResponseFrame(dm->c == C_I0 ? C_REJ0 : C_REJ1);
-        
-        
+
+
         data_machine_destroy(dm);
         return -1;
     }
@@ -357,6 +348,7 @@ int llclose(int showStatistics) {
         perror("tcsetattr");
         exit(-1);
     }
+
     if (showStatistics) {
         if (parameters.role == LlTx) {
             printf("Total frames sent: %d\n", totalFramesInfo + totalFramesControl);
@@ -372,9 +364,9 @@ int llclose(int showStatistics) {
             printf("Total frames received (control): %d\n", totalFramesControl);
             printf("Total REJ sent: %d\n", totalREJ);
             printf("Total time spent on information frames: %ld seconds\n", time(NULL) - currTime);
-            
             printf("Total information frames received with errors: %d vs without errors: %d\n", totalREJ, totalFramesInfo - totalREJ);
         }
     }
+
     return 1;
 }
