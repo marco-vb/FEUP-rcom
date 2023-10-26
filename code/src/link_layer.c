@@ -30,7 +30,8 @@ int alarmEnabled = FALSE;
 int alarmCount = 0;
 
 int totalFramesInfo = 0;
-int totalFramesControl = 0;
+// int receivedFramesControl = 0;
+// int sentFramesControl = 0;
 int totalAlarmTimeouts = 0;
 int totalREJ = 0;
 time_t currTime;
@@ -64,7 +65,7 @@ void sendControlFrame(uint8_t control) {
         destroyActions(actions);
         exit(-1);
     }
-    totalFramesControl++;
+    // sentFramesControl++;
     destroyActions(actions);
 }
 
@@ -94,6 +95,7 @@ uint8_t receiveControlFrame() {
     uint8_t result = cm->c;
     control_machine_destroy(cm);
     printf("Received control frame %02x\n", result);
+    // receivedFramesControl++;
     return result;
 }
 
@@ -221,12 +223,10 @@ int llopen(LinkLayer connectionParameters) {
     if (connectionParameters.role == LlTx) {
 
         sendControlFrame(C_SET);
-        printf("Sent SET and received UA\n");
     }
     else {
         while (receiveControlFrame() != C_SET) printf("Received something that is not SET\n");
         sendResponseFrame(C_UA);
-        totalFramesControl++;
     }
     currTime = time(NULL);
     return 1;
@@ -240,7 +240,6 @@ int llwrite(const uint8_t* buf, int bufSize) {
 
     int newFrameSize;
     uint8_t* frame = buildInformationFrame(buf, bufSize, &newFrameSize);
-    totalFramesInfo++;
 
     Actions* actions = createActions(2,
         createAction(currentSequenceNumber ? C_RR0 : C_RR1, toggleSequenceNumber),
@@ -252,6 +251,7 @@ int llwrite(const uint8_t* buf, int bufSize) {
         printf("Failed to send frame with timeout\n");
         exit(-1);
     }
+    totalFramesInfo++;
     destroyActions(actions);
     free(frame);
     return bufSize;
@@ -270,7 +270,7 @@ int llread(uint8_t* packet) {
             data_machine_update(dm, byte);
         }
     }
-
+    totalFramesInfo++;  // count even if failed with error in data
     if (data_machine_is_failed(dm)) {
         if (dm->c == C_I0 && currentSequenceNumber == 0) {
             printf("Something failed, sending REJ\n");
@@ -299,13 +299,11 @@ int llread(uint8_t* packet) {
     else if (dm->c == C_I1) {
         sendResponseFrame(C_RR0);
         correctSequenceNumber = currentSequenceNumber == 1;
-        totalFramesInfo++;
     }
     if (!correctSequenceNumber) {
         data_machine_destroy(dm);
         return -1;
     }
-
     memcpy(packet, dm->data, dm->data_size);
     int result = dm->data_size;
     data_machine_destroy(dm);
@@ -326,7 +324,6 @@ int llclose(int showStatistics) {
     else {
         while (receiveControlFrame() != C_DISC) printf("Received something that is not DISC\n");
         sendControlFrame(C_DISC);
-        totalFramesControl++;
     }
 
     // Restore the old port settings
@@ -337,19 +334,21 @@ int llclose(int showStatistics) {
 
     if (showStatistics) {
         if (parameters.role == LlTx) {
-            printf("Total frames sent: %d\n", totalFramesInfo + totalFramesControl);
+            // printf("Total frames sent: %d\n", totalFramesInfo + sentFramesControl);
             printf("Total frames sent (info): %d\n", totalFramesInfo);
-            printf("Total frames sent (control): %d\n", totalFramesControl);
+            // printf("Total frames sent (control): %d\n", sentFramesControl);
+            // printf("Total frames received (control): %d\n", receivedFramesControl);
             printf("Total alarm timeouts: %d\n", totalAlarmTimeouts);
             printf("Total REJ received: %d\n", totalREJ);
             printf("Total time spent on information frames: %ld seconds\n", time(NULL) - currTime);
         }
         else {
-            printf("Total frames received: %d\n", totalFramesInfo + totalFramesControl);
+            // printf("Total frames received: %d\n", totalFramesInfo + receivedFramesControl);
             printf("Total frames received (info): %d\n", totalFramesInfo);
-            printf("Total frames received (control): %d\n", totalFramesControl);
+            // printf("Total frames received (control): %d\n", receivedFramesControl);
+            printf("Total alarm timeouts: %d\n", totalAlarmTimeouts);   // only applicable to the DISC at the end
             printf("Total REJ sent: %d\n", totalREJ);
-            printf("Total time spent on information frames: %ld seconds\n", time(NULL) - currTime);
+            printf("Total time spent: %ld seconds\n", time(NULL) - currTime);
             printf("Total information frames received with errors: %d vs without errors: %d\n", totalREJ, totalFramesInfo - totalREJ);
         }
     }

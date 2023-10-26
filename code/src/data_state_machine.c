@@ -52,7 +52,7 @@ void data_machine_update(DataMachine* machine, uint8_t byte) {
         }
         break;
     case DATA_BCC1:
-        if (byte == FLAG_BYTE) {
+        if (byte == FLAG_BYTE) {    // no data in the frame
             machine->state = DATA_FAIL;
         }
         else if (byte == ESCAPE_BYTE) {
