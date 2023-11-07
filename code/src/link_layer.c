@@ -387,6 +387,6 @@ int llclose(int showStatistics) {
             printf("Total information frames received with errors: %d vs without errors: %d, probability was: %10f\n", totalREJ, totalFramesInfo - totalREJ, (double) totalREJ / totalFramesInfo);
         }
     }
-
+    close(fd);
     return 1;
 }
