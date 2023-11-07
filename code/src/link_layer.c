@@ -16,6 +16,8 @@
 #include <signal.h>
 #include <time.h>
 
+#define PROPAGATION_TIME_MICRO_SECONDS 1000
+#define ERROR_PROBABILITY_PERCENTAGE 90
 
 int fd;
 struct termios oldtio;
@@ -30,11 +32,28 @@ int alarmEnabled = FALSE;
 int alarmCount = 0;
 
 int totalFramesInfo = 0;
-// int receivedFramesControl = 0;
-// int sentFramesControl = 0;
+int totalBytesInfo = 0;
 int totalAlarmTimeouts = 0;
 int totalREJ = 0;
-time_t currTime;
+
+struct timespec startingTime;
+struct timespec currTime;
+
+void alarmHandler(int signal);
+
+int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed);
+int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions);
+void sendControlFrame(uint8_t control);
+void sendResponseFrame(uint8_t control);
+uint8_t receiveControlFrame();
+uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSize);
+
+// actions
+void toggleSequenceNumber();
+void stopAlarm();
+void resetAlarm();
+
+void printTimeDifference(long start_s, long start_ns, long curr_s, long curr_ns);
 
 void alarmHandler(int signal) {
     alarmEnabled = FALSE;
@@ -42,15 +61,6 @@ void alarmHandler(int signal) {
     totalAlarmTimeouts++;
     printf("Alarm #%d\n", alarmCount);
 }
-
-int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed);
-int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions);
-
-// actions
-void toggleSequenceNumber();
-void stopAlarm();
-void resetAlarm();
-
 
 // Sends control frame and waits for response
 void sendControlFrame(uint8_t control) {
@@ -72,6 +82,7 @@ void sendControlFrame(uint8_t control) {
 // Sends response frame without timeout
 void sendResponseFrame(uint8_t control) {
     uint8_t buf [] = { FLAG_BYTE, A_BYTE, control, A_BYTE ^ control, FLAG_BYTE };
+    usleep(PROPAGATION_TIME_MICRO_SECONDS); // for testing efficiency
     write(fd, buf, 5);
 }
 
@@ -94,13 +105,14 @@ uint8_t receiveControlFrame() {
     }
     uint8_t result = cm->c;
     control_machine_destroy(cm);
-    printf("Received control frame %02x\n", result);
+    // printf("Received control frame %02x\n", result);
     // receivedFramesControl++;
     return result;
 }
 
 uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSize) {
     int frameSize = bufSize + 6;
+    totalBytesInfo += bufSize;    // consider all bytes from the application layer (not stuffed)
     uint8_t frame[frameSize];
     memset(frame, 0, frameSize);
 
@@ -116,11 +128,11 @@ uint8_t* buildInformationFrame(const uint8_t* buf, int bufSize, int* newFrameSiz
         frame[i + 4] = buf[i];
         frame[dataBccIndex] ^= buf[i];
     }
-
+    
     uint8_t* stuffed = (uint8_t*) malloc(frameSize * 2);
     memset(stuffed, 0, frameSize * 2);
     *newFrameSize = addByteStuffing(frame, frameSize, stuffed);
-
+    // totalBytesInfo += *newFrameSize; // consider the stuffed bytes
     return stuffed;
 }
 
@@ -148,14 +160,14 @@ void toggleSequenceNumber() {
     stopAlarm();
 }
 void resetAlarm() {
-    printf("Received REJ, reset alarm\n");
+    // printf("Received REJ, reset alarm\n");
     totalREJ++;
     alarmCount = 0;
     alarmEnabled = FALSE;
     alarm(parameters.timeout);
 }
 void stopAlarm() {
-    printf("Stopped alarm\n");
+    // printf("Stopped alarm\n");
     alarm(0);
     stopTimeout = TRUE;
 }
@@ -166,6 +178,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions) {
     stopTimeout = FALSE;
     while (alarmCount < parameters.nRetransmissions && !stopTimeout) {
         if (!alarmEnabled) {
+            usleep(PROPAGATION_TIME_MICRO_SECONDS); // for testing efficiency
             write(fd, frame, frameSize);
             alarm(parameters.timeout); // Set alarm to be triggered in X seconds
             alarmEnabled = TRUE;
@@ -174,7 +187,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions) {
     }
 
     if (alarmCount == parameters.nRetransmissions) {
-        printf("Failed to send frame\n");
+        // printf("Failed to send frame\n");
         exit(-1);
     }
 
@@ -187,6 +200,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions) {
 int llopen(LinkLayer connectionParameters) {
     parameters = connectionParameters;
     fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
+    srand(time(NULL));
 
     if (fd < 0) {
         perror(connectionParameters.serialPort);
@@ -228,7 +242,9 @@ int llopen(LinkLayer connectionParameters) {
         while (receiveControlFrame() != C_SET) printf("Received something that is not SET\n");
         sendResponseFrame(C_UA);
     }
-    currTime = time(NULL);
+    clock_gettime(CLOCK_MONOTONIC, &startingTime);
+
+    // currTime = time(NULL);
     return 1;
 }
 
@@ -263,7 +279,6 @@ int llwrite(const uint8_t* buf, int bufSize) {
 int llread(uint8_t* packet) {
     DataMachine* dm = data_machine_init();
     uint8_t byte;
-
     while (!data_machine_is_finished(dm)) {
         if (read(fd, &byte, 1) > 0) {
             // printf("Received byte %2x\n", response);
@@ -271,8 +286,14 @@ int llread(uint8_t* packet) {
         }
     }
     totalFramesInfo++;  // count even if failed with error in data
-    if (data_machine_is_failed(dm)) {
-        if (dm->c == C_I0 && currentSequenceNumber == 0) {
+    int value = random() % 100;
+    if (data_machine_is_failed(dm) || value < ERROR_PROBABILITY_PERCENTAGE) {
+        if (value < ERROR_PROBABILITY_PERCENTAGE) {
+            // for efficiency testing
+            sendResponseFrame(currentSequenceNumber == 0 ? C_REJ0 : C_REJ1);
+            totalREJ++;
+        }
+        else if (dm->c == C_I0 && currentSequenceNumber == 0) {
             printf("Something failed, sending REJ\n");
             sendResponseFrame(C_REJ0);
             totalREJ++;
@@ -313,10 +334,26 @@ int llread(uint8_t* packet) {
     return result;
 }
 
+// Function to print time difference in the format "seconds.milliseconds"
+void printTimeDifference(long start_s, long start_ns, long curr_s, long curr_ns) {
+    // Calculate the time difference in seconds and milliseconds
+    long diff_s = curr_s - start_s;
+    long diff_ns = curr_ns - start_ns;
+    if (diff_ns < 0) {
+        diff_s--;
+        diff_ns += 1000000000; // Convert nanoseconds to positive value
+    }
+
+    // Print the time difference in the desired format
+    printf("Total time spent: %ld.%03ld seconds\n", diff_s, diff_ns / 1000000);
+}
+
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
 int llclose(int showStatistics) {
+    clock_gettime(CLOCK_MONOTONIC, &currTime);
+
     if (parameters.role == LlTx) {
         sendControlFrame(C_DISC);
         sendResponseFrame(C_UA);
@@ -334,22 +371,20 @@ int llclose(int showStatistics) {
 
     if (showStatistics) {
         if (parameters.role == LlTx) {
-            // printf("Total frames sent: %d\n", totalFramesInfo + sentFramesControl);
             printf("Total frames sent (info): %d\n", totalFramesInfo);
-            // printf("Total frames sent (control): %d\n", sentFramesControl);
-            // printf("Total frames received (control): %d\n", receivedFramesControl);
             printf("Total alarm timeouts: %d\n", totalAlarmTimeouts);
+            
             printf("Total REJ received: %d\n", totalREJ);
-            printf("Total time spent on information frames: %ld seconds\n", time(NULL) - currTime);
+            printTimeDifference(startingTime.tv_sec, startingTime.tv_nsec, currTime.tv_sec, currTime.tv_nsec);
+            printf("Total bytes sent as information frames: %d\n", totalBytesInfo);
+    
         }
         else {
-            // printf("Total frames received: %d\n", totalFramesInfo + receivedFramesControl);
             printf("Total frames received (info): %d\n", totalFramesInfo);
-            // printf("Total frames received (control): %d\n", receivedFramesControl);
             printf("Total alarm timeouts: %d\n", totalAlarmTimeouts);   // only applicable to the DISC at the end
             printf("Total REJ sent: %d\n", totalREJ);
-            printf("Total time spent: %ld seconds\n", time(NULL) - currTime);
-            printf("Total information frames received with errors: %d vs without errors: %d\n", totalREJ, totalFramesInfo - totalREJ);
+            printTimeDifference(startingTime.tv_sec, startingTime.tv_nsec, currTime.tv_sec, currTime.tv_nsec);
+            printf("Total information frames received with errors: %d vs without errors: %d, probability was: %10f\n", totalREJ, totalFramesInfo - totalREJ, (double) totalREJ / totalFramesInfo);
         }
     }
 
