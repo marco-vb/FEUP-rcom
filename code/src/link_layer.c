@@ -28,6 +28,7 @@ LinkLayer parameters;
 // current sequence number for I frames (0 or 1)
 int currentSequenceNumber = 0;  // it's the next number that the writer will send
 
+int stopTimeout = FALSE;
 int alarmEnabled = FALSE;
 int alarmCount = 0;
 
@@ -152,8 +153,6 @@ int addByteStuffing(uint8_t* frame, int frameSize, uint8_t* stuffed) {
     stuffed[stuffedSize++] = FLAG_BYTE;
     return stuffedSize;
 }
-
-int stopTimeout = FALSE;
 
 void toggleSequenceNumber() {
     currentSequenceNumber ^= 1;
