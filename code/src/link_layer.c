@@ -28,7 +28,7 @@ LinkLayer parameters;
 // current sequence number for I frames (0 or 1)
 int currentSequenceNumber = 0;  // it's the next number that the writer will send
 
-int stopTimeout = FALSE;
+int stopTimeout = TRUE;
 int alarmEnabled = FALSE;
 int alarmCount = 0;
 
@@ -184,7 +184,7 @@ int writeWithTimeout(const uint8_t* frame, int frameSize, Actions* actions) {
         }
         performAction(actions, receiveControlFrame());
     }
-
+    stopTimeout = TRUE;
     if (alarmCount == parameters.nRetransmissions) {
         // printf("Failed to send frame\n");
         exit(-1);
