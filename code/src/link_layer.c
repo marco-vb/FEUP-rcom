@@ -96,7 +96,7 @@ uint8_t receiveControlFrame() {
             // printf("Received byte %02x\n", response);
             control_machine_update(cm, response);
         }
-        if (parameters.role == LlTx && !alarmEnabled) {
+        if (!stopTimeout && !alarmEnabled) {
             // write with timeout alarm received -> stop reading and try to write again
             control_machine_destroy(cm);
             printf("Timed out\n");
