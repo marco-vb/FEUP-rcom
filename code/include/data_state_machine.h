@@ -9,8 +9,6 @@
 
 #include "ll_macros.h"
 
-#define MAX_DATA_SIZE 3000
-
 typedef enum {
     DATA_START,
     DATA_FLAG,
@@ -25,12 +23,12 @@ typedef enum {
 
 typedef struct {
     DataState state;
-    uint8_t data[MAX_DATA_SIZE];
+    uint8_t* data;
     uint16_t data_size;
     uint8_t a, c;
 } DataMachine;
 
-DataMachine* data_machine_init();
+DataMachine* data_machine_init(int max_data_size);
 void data_machine_update(DataMachine* machine, uint8_t byte);
 bool data_machine_is_finished(DataMachine* machine);
 bool data_machine_is_failed(DataMachine* machine);

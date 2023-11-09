@@ -1,11 +1,12 @@
 #include "data_state_machine.h"
 
 
-DataMachine* data_machine_init() {
+DataMachine* data_machine_init(int data_max_size) {
     DataMachine* dm = malloc(sizeof(DataMachine));
+    dm->data = malloc(data_max_size);
     dm->state = DATA_START;
     dm->a = dm->c = dm->data_size = 0;
-    memset(dm->data, 0, MAX_DATA_SIZE);
+    memset(dm->data, 0, data_max_size);
     return dm;
 }
 
@@ -117,5 +118,6 @@ bool data_machine_is_failed(DataMachine* machine) {
 }
 
 void data_machine_destroy(DataMachine* machine) {
+    free(machine->data);
     free(machine);
 }
