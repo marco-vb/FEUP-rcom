@@ -107,7 +107,7 @@ uint8_t receiveControlFrame() {
         if (read(fd, &response, 1) > 0) {
             control_machine_update(cm, response);
         }
-        if (!stopTimeout && !alarmEnabled) {
+        if (parameters.role == LlTx && !alarmEnabled) {
             // write with timeout alarm received -> stop reading and try to write again
             control_machine_destroy(cm);
             printf("Timed out\n");
@@ -305,7 +305,7 @@ int llread(uint8_t* packet) {
         else {
             // error in I frame, but we have already received it before (RR got lost)
             sendResponseFrame(dm->c == C_I0 ? C_RR1 : C_RR0);
-        }        
+        }
 
         data_machine_destroy(dm);
         return -1;
